@@ -101,13 +101,13 @@ def workers(db_url: str, tmp_path: Path) -> Iterator[Callable[[str], Worker]]:
         worker.out.close()
 
 
-def add_due_schedule(url: str, name: str) -> uuid.UUID:
+def add_due_schedule(url: str, name: str, cron: str = "* * * * *") -> uuid.UUID:
     sid = uuid.uuid4()
     with psycopg.connect(url, autocommit=True) as conn:
         conn.execute(
             "INSERT INTO schedules (id, name, cron, timezone, preset_id, prompt, armed_at) "
-            "VALUES (%s, %s, '* * * * *', 'UTC', %s, 'go', %s)",
-            (sid, name, uuid.uuid4(), datetime.now(UTC) - timedelta(hours=2)),
+            "VALUES (%s, %s, %s, 'UTC', %s, 'go', %s)",
+            (sid, name, cron, uuid.uuid4(), datetime.now(UTC) - timedelta(hours=2)),
         )
     return sid
 
@@ -148,7 +148,10 @@ def test_single_worker_fires(db_url: str, workers):
     first.wait_for(STARTED)
     second = workers("second")
     second.wait_for(STANDBY)
-    sid = add_due_schedule(db_url, "every-minute")
+    # Daily at the wall-clock time one hour ago: exactly one fire time lies in
+    # (armed_at, now] and the next is a day away, whatever minute the run crosses.
+    due = datetime.now(UTC) - timedelta(hours=1)
+    sid = add_due_schedule(db_url, "daily", cron=f"{due.minute} {due.hour} * * *")
     wait(lambda: run_count(db_url, sid) == 1, what="the due schedule to fire")
     time.sleep(3)  # several ticks of both workers
     assert run_count(db_url, sid) == 1

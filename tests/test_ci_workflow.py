@@ -52,6 +52,20 @@ def test_workflow_jobs_and_targets():
         assert "secrets." not in steps_text(name)
 
 
+def test_images_job_checks_uid_and_no_dev_deps():
+    steps = JOBS["images"]["steps"]
+    names = [str(s.get("name", "")) for s in steps]
+    runs = [str(s.get("run", "")) for s in steps]
+    uid = 'test "$(docker run --rm --entrypoint id agents-schedule:ci -u)" = 1000'
+    no_dev = "! docker run --rm --entrypoint python agents-schedule:ci -c 'import pytest'"
+    smoke = next(i for i, r in enumerate(runs) if "agents-schedule:ci --help" in r)
+    uid_at = next(i for i, r in enumerate(runs) if uid in r)
+    dev_at = next(i for i, r in enumerate(runs) if no_dev in r)
+    first_push = min(i for i, s in enumerate(steps) if s.get("if") == MAIN)
+    assert smoke < uid_at < first_push, names
+    assert smoke < dev_at < first_push, names
+
+
 def test_regctl_installer_pinned_by_sha():
     uses = re.findall(r"regclient/actions/regctl-installer@(\S+)", TEXT)
     assert uses

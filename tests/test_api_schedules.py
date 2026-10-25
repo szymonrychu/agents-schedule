@@ -281,3 +281,24 @@ async def test_probes(make_http, pool):
         r = await http.get("/readyz")
         assert r.status_code == 503
         assert r.json()["error"]["code"] == "not_ready"
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_orchestrator_auth_failure_is_distinct(make_http, preset, caplog, status):
+    def deny(request: httpx.Request) -> httpx.Response:
+        err = {"error": {"code": "unauthorized", "message": "bad token"}}
+        return httpx.Response(status, json=err)
+
+    async with (
+        OrchestratorClient("http://orchestrator", "t", transport=httpx.MockTransport(deny)) as bad,
+        make_http(orch=bad) as http,
+    ):
+        with caplog.at_level("ERROR"):
+            r = await http.post(f"{BASE}/schedules", json=body(preset))
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == "orchestrator_auth_failed"
+    assert "token" in r.json()["error"]["message"]
+    assert any(
+        str(status) in rec.getMessage() and "unauthorized" in rec.getMessage()
+        for rec in caplog.records
+    )

@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, LiteralString, cast
 
 import psycopg
 from agents_common.db import claim
@@ -64,7 +64,7 @@ class Run:
 
 async def _fetch(conn: psycopg.AsyncConnection, query: str, params: Any = None) -> list[Run]:
     async with conn.cursor(row_factory=class_row(Run)) as cur:
-        await cur.execute(query, params)
+        await cur.execute(cast(LiteralString, query), params)  # built from constants
         return await cur.fetchall()
 
 

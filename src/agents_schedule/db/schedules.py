@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, LiteralString, cast
 
 import psycopg
 from psycopg import errors
@@ -45,7 +45,7 @@ class Schedule:
 async def _fetch(conn: psycopg.AsyncConnection, query: str, params: Any = None) -> list[Schedule]:
     async with conn.cursor(row_factory=class_row(Schedule)) as cur:
         try:
-            await cur.execute(query, params)
+            await cur.execute(cast(LiteralString, query), params)  # built from constants
         except errors.UniqueViolation as exc:
             raise ScheduleConflict("a schedule with this name already exists") from exc
         return await cur.fetchall()

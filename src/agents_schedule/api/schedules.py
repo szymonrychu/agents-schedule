@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
@@ -28,6 +29,7 @@ from agents_schedule.api.schemas import (
 from agents_schedule.db import runs, schedules
 from agents_schedule.settings import Settings
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -55,7 +57,24 @@ async def _check_preset(client: OrchestratorClient, preset_id: uuid.UUID) -> Non
         await client.get_preset(preset_id)
     except NotFound as exc:
         raise ApiError(422, "unknown_preset", f"preset {preset_id} does not exist") from exc
-    except (OrchestratorUnavailable, OrchestratorError) as exc:
+    except OrchestratorUnavailable as exc:
+        log.warning("orchestrator unreachable during preset check: %s", exc)
+        raise ApiError(
+            503, "orchestrator_unavailable", "the orchestrator could not be reached"
+        ) from exc
+    except OrchestratorError as exc:
+        log.error(
+            "orchestrator refused the preset check: status=%s code=%s message=%s",
+            exc.status,
+            exc.code,
+            exc.message,
+        )
+        if exc.status in (401, 403):
+            raise ApiError(
+                503,
+                "orchestrator_auth_failed",
+                "the orchestrator rejected the service token (SCHED_ORCHESTRATOR_TOKEN)",
+            ) from exc
         raise ApiError(
             503, "orchestrator_unavailable", "the orchestrator could not be reached"
         ) from exc

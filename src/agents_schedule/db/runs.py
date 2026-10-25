@@ -84,9 +84,17 @@ async def _insert(
 ) -> Run | None:
     return await _fetch_one(
         conn,
-        "INSERT INTO runs (id, schedule_id, trigger, fire_time, status, reason) "
-        f"VALUES (%s, %s, %s, %s, %s, %s) {tail} RETURNING {_COLUMNS}",
-        (uuid.uuid4(), schedule_id, trigger, fire_time, status, reason),
+        "INSERT INTO runs (id, schedule_id, trigger, fire_time, status, reason, finished_at) "
+        f"VALUES (%s, %s, %s, %s, %s, %s, %s) {tail} RETURNING {_COLUMNS}",
+        (
+            uuid.uuid4(),
+            schedule_id,
+            trigger,
+            fire_time,
+            status,
+            reason,
+            datetime.now(UTC) if status == "ignored" else None,
+        ),
     )
 
 

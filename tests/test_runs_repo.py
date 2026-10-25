@@ -60,6 +60,21 @@ async def test_insert_scheduled_ignored_keeps_reason(aconn):
     assert (run.status, run.reason) == ("ignored", "missed")
 
 
+async def test_ignored_insert_sets_finished_at(aconn):
+    sid = await add_schedule(aconn)
+    run = await runs.insert_scheduled(aconn, sid, at(0), "ignored", "previous_running")
+    assert run.finished_at is not None
+    manual = await runs.insert_manual(aconn, sid, NOW, "ignored", "x")
+    assert manual.finished_at is not None
+
+
+async def test_new_insert_has_no_finished_at(aconn):
+    sid = await add_schedule(aconn)
+    run = await runs.insert_scheduled(aconn, sid, at(0), "new")
+    assert run.finished_at is None
+    assert (await runs.insert_manual(aconn, sid, NOW, "new")).finished_at is None
+
+
 async def test_insert_manual(aconn):
     sid = await add_schedule(aconn)
     run = await runs.insert_manual(aconn, sid, NOW, "new")

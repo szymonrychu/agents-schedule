@@ -71,6 +71,24 @@ securityContext:
     drop:
       - ALL
 
+# The api is routed under its own prefix on the shared host. The chart adds no cert-manager
+# annotation: only one Ingress of the host carries it, the others reference the same TLS secret.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # Source CIDRs the ingress refuses (ingress-nginx denylist annotation when non-empty).
+  denySourceRanges: []
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /schedules
+          pathType: Prefix
+  tls: []
+    # - secretName: chart-example-tls
+    #   hosts:
+    #     - chart-example.local
+
 nodeSelector: {}
 tolerations: []
 affinity: {}

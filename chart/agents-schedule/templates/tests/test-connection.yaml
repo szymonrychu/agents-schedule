@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "agents-schedule.fullname" . }}-test-connection
+  labels:
+    {{- include "agents-schedule.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['-qO-', '-T', '10', '{{ include "agents-schedule.fullname" . }}-api:{{ .Values.service.port }}/healthz']
+  restartPolicy: Never

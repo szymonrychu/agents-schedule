@@ -42,6 +42,18 @@ async def test_insert_scheduled_once(aconn):
     assert await cur.fetchone() == (1, "new")
 
 
+async def test_manual_run_at_fire_time_does_not_suppress_scheduled(aconn):
+    sid = await add_schedule(aconn)
+    manual = await runs.insert_manual(aconn, sid, at(0), "new")
+    again = await runs.insert_manual(aconn, sid, at(0), "new")
+    assert manual.id != again.id
+    scheduled = await runs.insert_scheduled(aconn, sid, at(0), "new")
+    assert scheduled is not None
+    assert await runs.insert_scheduled(aconn, sid, at(0), "new") is None
+    cur = await aconn.execute("SELECT count(*) FROM runs")
+    assert await cur.fetchone() == (3,)
+
+
 async def test_insert_scheduled_ignored_keeps_reason(aconn):
     sid = await add_schedule(aconn)
     run = await runs.insert_scheduled(aconn, sid, at(0), "ignored", "missed")

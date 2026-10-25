@@ -105,7 +105,7 @@ async def insert_scheduled(
         fire_time,
         status,
         reason,
-        "ON CONFLICT (schedule_id, fire_time) DO NOTHING",
+        "ON CONFLICT (schedule_id, fire_time) WHERE trigger = 'scheduled' DO NOTHING",
     )
 
 

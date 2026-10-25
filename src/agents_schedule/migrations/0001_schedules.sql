@@ -26,8 +26,10 @@ CREATE TABLE IF NOT EXISTS runs (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     started_at timestamptz,
-    finished_at timestamptz,
-    UNIQUE (schedule_id, fire_time)
+    finished_at timestamptz
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS runs_scheduled_fire_uniq
+    ON runs (schedule_id, fire_time) WHERE trigger = 'scheduled';
 
 CREATE INDEX IF NOT EXISTS runs_status_fire_time_idx ON runs (status, fire_time);

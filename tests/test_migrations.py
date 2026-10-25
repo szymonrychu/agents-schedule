@@ -52,7 +52,9 @@ def test_runs_unique_schedule_fire_time(conn):
     sid = add_schedule(conn)
     add_run(conn, sid)
     with pytest.raises(psycopg.errors.UniqueViolation):
-        add_run(conn, sid, trigger="manual")
+        add_run(conn, sid)
+    add_run(conn, sid, trigger="manual")
+    add_run(conn, sid, trigger="manual")
     add_run(conn, sid, fire="2026-01-02T00:00:00Z")
 
 

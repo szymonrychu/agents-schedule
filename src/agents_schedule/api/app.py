@@ -13,7 +13,7 @@ from psycopg_pool import AsyncConnectionPool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from agents_schedule.api import schedules
+from agents_schedule.api import runs, schedules
 from agents_schedule.api.errors import ApiError, error_response
 from agents_schedule.settings import Settings
 
@@ -96,5 +96,6 @@ def create_app(
         return JSONResponse({"status": "ok"})
 
     app.include_router(schedules.router, prefix=PREFIX)
+    app.include_router(runs.router, prefix=PREFIX)
     app.add_middleware(SourceAllowlist, networks=settings.api_networks())
     return app

@@ -58,3 +58,20 @@ def test_connection_hook():
     target = " ".join(container.get("command", []) + container.get("args", []))
     assert f"{svc['metadata']['name']}:80/healthz" in target
     assert pod["spec"]["restartPolicy"] == "Never"
+
+
+def test_connection_hook_is_pinned_and_restricted():
+    pod = _one(render(), "Pod")
+    annotations = pod["metadata"]["annotations"]
+    assert annotations["helm.sh/hook-delete-policy"] == "before-hook-creation,hook-succeeded"
+    container = pod["spec"]["containers"][0]
+    name, _, tag = container["image"].rpartition(":")
+    assert name and tag and tag != "latest"
+    psc = pod["spec"]["securityContext"]
+    assert psc["runAsNonRoot"] is True
+    assert psc["runAsUser"] != 0
+    assert psc["seccompProfile"] == {"type": "RuntimeDefault"}
+    sc = container["securityContext"]
+    assert sc["allowPrivilegeEscalation"] is False
+    assert sc["readOnlyRootFilesystem"] is True
+    assert sc["capabilities"] == {"drop": ["ALL"]}

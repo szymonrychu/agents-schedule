@@ -2,6 +2,22 @@
 
 Lessons that outlive a session. Newest first.
 
+## 2026-10-25 - kind e2e two-worker failure on 814ba20 (e2e-two-worker-failure)
+
+- Root cause: a race in the test, present since 5653502, not a product regression. The
+  dispatcher claims a run (`new -> in-progress`) and only then fetches the preset, creates the
+  session and posts the prompt, so an in-progress run has `message_id` null for a few ms. The
+  two-worker probe completed every in-progress run, so a poll landing in that window posted
+  `/_messages/None/complete` (fake log: preset GET, then the None complete, then the session
+  POST of the same worker). fc99d8c passed by timing. d4f6a92 (fault isolation, proxy_headers)
+  did not change the order or the api; the api log shows only 200s.
+- The follow-on `Server disconnected` in the next test was the fake, not the api: control.py
+  raised on `int("None")`, and uvicorn closes the connection after an exception once the 500 has
+  started, so the test's next request on that keep-alive connection (port-forward 18091) got EOF.
+- Rule: a test completes a turn only once the run has a `message_id`
+  (`complete_sent_turns`, pinned by tests/test_e2e_helpers.py). The e2e diagnostics print every
+  worker pod by label; `kubectl logs deployment/x` shows one pod only.
+
 ## 2026-10-25 - dispatcher rules (run-dispatcher)
 
 - `schedule_disabled` ignores only `trigger = 'scheduled'` runs claimed while their schedule is

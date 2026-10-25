@@ -198,6 +198,27 @@ def wait_run(api: Api, run_id: str, status: str, what: str = "") -> dict[str, An
     return wait_for(probe, what or f"run {run_id} to be {status}")
 
 
+def complete_sent_turns(
+    api: Api, fake: Fake, schedule_ids: list[str], completed: set[str]
+) -> list[list[dict[str, Any]]]:
+    """Complete the turn of every posted run not in `completed`; return each schedule's runs.
+
+    The dispatcher claims a run (`new -> in-progress`) before it creates the session and posts
+    the prompt, so an in-progress run without a `message_id` has nothing to complete yet; a later
+    poll completes it. The ids completed are added to `completed`, so each turn completes once.
+    """
+    every = []
+    for schedule_id in schedule_ids:
+        runs = schedule_runs(api, schedule_id)
+        for run in runs:
+            mid = run["message_id"]
+            if run["status"] == "in-progress" and mid and mid not in completed:
+                fake.complete(mid)
+                completed.add(mid)
+        every.append(runs)
+    return every
+
+
 def handled(api: Api, fake: Fake, run_id: str) -> dict[str, Any]:
     """Wait for the run to be in progress, complete its turn, wait for `handled`."""
     run = wait_run(api, run_id, "in-progress")
@@ -501,16 +522,9 @@ def test_two_workers_one_run_and_one_session_per_fire(api: Api, fake: Fake, make
     completed: set[str] = set()
 
     def fires_done() -> bool:
-        """Complete every in-progress turn; true once each schedule has two handled runs."""
-        done = True
-        for s in schedules:
-            runs = schedule_runs(api, s["id"])
-            for run in runs:
-                if run["status"] == "in-progress" and run["message_id"] not in completed:
-                    fake.complete(run["message_id"])
-                    completed.add(run["message_id"])
-            done = done and sum(r["status"] == "handled" for r in runs) >= 2
-        return done
+        """Complete every posted turn; true once each schedule has two handled runs."""
+        every = complete_sent_turns(api, fake, [s["id"] for s in schedules], completed)
+        return all(sum(r["status"] == "handled" for r in runs) >= 2 for runs in every)
 
     wait_for(fires_done, "two handled fires of every schedule", 2 * FIRE_WAIT)
 

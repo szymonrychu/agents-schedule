@@ -33,7 +33,9 @@ diagnostics() {
   kubectl -n "$NS" get events --sort-by=.lastTimestamp | tail -60 || true
   for c in api worker; do
     echo "--- $RELEASE-$c"
-    kubectl -n "$NS" logs "deployment/$RELEASE-$c" --all-containers --tail=120 || true
+    # by label, not deployment/<name>: that picks one pod and hides the other worker replica
+    kubectl -n "$NS" logs -l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=$c" \
+      --all-containers --prefix --tail=120 || true
   done
   echo "--- fake-orchestrator"
   kubectl -n "$NS" logs deployment/fake-orchestrator --tail=120 || true

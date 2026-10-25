@@ -7,6 +7,9 @@ import sys
 from collections.abc import Callable, Sequence
 
 from agents_schedule import __version__
+from agents_schedule.settings import Settings, SettingsError, load_settings
+
+EXIT_CONFIG = 78
 
 CommandFunc = Callable[[argparse.Namespace], int | None]
 
@@ -47,6 +50,46 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.print_help(sys.stderr)
         raise SystemExit(2)
     return int(args.func(args) or 0)
+
+
+def _configured(func: Callable[[Settings], int | None]) -> CommandFunc:
+    """Wrap a command that needs settings: a bad configuration prints each problem, exits 78."""
+
+    def run(_: argparse.Namespace) -> int | None:
+        try:
+            settings = load_settings()
+        except SettingsError as exc:
+            for name, problem in exc.problems.items():
+                print(f"{name}: {problem}", file=sys.stderr)
+            return EXIT_CONFIG
+        return func(settings)
+
+    return run
+
+
+def _migrate(settings: Settings) -> int:
+    from agents_schedule.db.migrate import migrate
+
+    for name in migrate(settings):
+        print(name)
+    return 0
+
+
+def _api(settings: Settings) -> int:
+    from agents_schedule import runtime
+
+    return runtime.api_main(settings)
+
+
+def _worker(settings: Settings) -> int:
+    from agents_schedule import runtime
+
+    return runtime.worker_main(settings)
+
+
+register("migrate", _configured(_migrate), "apply the schema migrations and exit")
+register("api", _configured(_api), "serve the http api")
+register("worker", _configured(_worker), "run the scheduler, dispatcher and tracker loops")
 
 
 if __name__ == "__main__":

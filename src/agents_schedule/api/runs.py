@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 from agents_common.db import notify
 from fastapi import APIRouter, Query, Request
 
-from agents_schedule import dispatcher, scheduler
+from agents_schedule import dispatcher
 from agents_schedule.api.errors import ApiError
 from agents_schedule.api.schemas import RunView
 from agents_schedule.db import runs, schedules
@@ -36,9 +36,7 @@ async def run_now(request: Request, schedule_id: str) -> RunView:
     max_per_schedule = request.app.state.settings.max_per_schedule
     async with request.app.state.pool.connection() as conn, conn.transaction():
         # The scheduler's per-schedule lock keeps the in-flight count and the insert atomic.
-        await conn.execute(
-            "SELECT pg_advisory_xact_lock(%s, hashtext(%s::text))", (scheduler._FIRE_LOCK, sid)
-        )
+        await runs.fire_lock(conn, sid)
         if await schedules.get(conn, sid) is None:
             raise ApiError(404, "not_found", "schedule not found")
         now = datetime.now(UTC)

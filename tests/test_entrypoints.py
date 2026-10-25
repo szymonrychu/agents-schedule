@@ -1,7 +1,9 @@
 """The service commands run as real processes against a real database."""
 
+import asyncio
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -10,9 +12,16 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
 import psycopg
 import pytest
+from agents_common.db import open_pool
+from agents_common.orchestrator import OrchestratorClient
 from agents_common.runtime import lock_key
+
+from agents_schedule import runtime
+from agents_schedule.api.app import create_app
+from agents_schedule.settings import Settings
 
 LOCK = "agents-schedule-worker"
 STARTED = "worker holds the lock"
@@ -209,3 +218,40 @@ def test_api_serves_on_http_port_and_stops_on_sigterm(db_url: str):
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+
+
+async def test_api_ignores_forwarded_headers(db_url: str):
+    """Behind the oauth2-proxy sidecar the allowlist sees the socket peer, not X-Forwarded-For."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    settings = Settings.model_validate(
+        {
+            "database_url": db_url,
+            "orchestrator_url": "http://127.0.0.1:1",
+            "orchestrator_token": "test-token",
+            "http_host": "127.0.0.1",
+            "http_port": port,
+        }
+    )
+    pool = await open_pool(db_url, min_size=1, max_size=2)
+    client = OrchestratorClient(settings.orchestrator_url, "test-token")
+    server = runtime._Server(runtime._api_config(settings, create_app(settings, pool, client)))
+    serving = asyncio.create_task(server.serve())
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as http:
+            for _ in range(100):
+                if server.started:
+                    break
+                await asyncio.sleep(0.05)
+            assert server.started
+            url = "/schedules/api/v1/schedules"
+            plain = await http.get(url)
+            forwarded = await http.get(url, headers={"X-Forwarded-For": "203.0.113.9"})
+        assert plain.status_code == 200
+        assert forwarded.status_code == 200, forwarded.text
+    finally:
+        server.should_exit = True
+        await serving
+        await client.aclose()
+        await pool.close()

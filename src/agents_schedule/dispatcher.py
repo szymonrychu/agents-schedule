@@ -132,7 +132,7 @@ async def dispatch_once(
         )
     if run is None:
         return False
-    await _send(pool, client, settings, run)
+    await _send_isolated(pool, client, settings, run)
     return True
 
 
@@ -153,8 +153,8 @@ async def resume_pending(
     for run in pending:
         if now < run.updated_at + backoff(settings, run.attempts):
             continue
-        await _send(pool, client, settings, run)
-        resumed += 1
+        if await _send_isolated(pool, client, settings, run):
+            resumed += 1
     return resumed
 
 
@@ -179,6 +179,21 @@ async def run_dispatcher(
         listener.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await listener
+
+
+async def _send_isolated(
+    pool: AsyncConnectionPool, client: OrchestratorClient, settings: Settings, run: runs.Run
+) -> bool:
+    """`_send` that logs an unexpected error and returns False, so one run never stops the loop.
+
+    The run keeps its recorded ids, so a later pass resumes it without a second session or post.
+    """
+    try:
+        await _send(pool, client, settings, run)
+    except Exception:
+        log.exception("run %s: unexpected error, will retry", run.id)
+        return False
+    return True
 
 
 async def _send(

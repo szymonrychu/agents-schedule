@@ -94,3 +94,12 @@ def test_chart_version_script(script_tree: Path, args: list[str], code: int, out
     )
     assert r.returncode == code, r.stderr
     assert r.stdout.strip() == out
+
+
+def test_dockerfile_pins_uv():
+    text = (ROOT / "Dockerfile").read_text()
+    match = re.search(r"COPY --from=ghcr\.io/astral-sh/uv:(\S+) ", text)
+    assert match is not None
+    assert re.fullmatch(r"\d+\.\d+\.\d+", match.group(1)), match.group(1)
+    mise = (ROOT / ".mise.toml").read_text()
+    assert f'uv = "{match.group(1)}"' in mise

@@ -213,3 +213,32 @@ async def test_reused_run_tracked_by_delivery(aconn, pool, client, fake, setting
     resumed = await state(aconn, run)
     assert resumed.session_id is not None and resumed.message_id is not None
     assert len(fake.sessions) == sessions + 1
+
+
+async def test_unexpected_error_isolated_per_run(
+    aconn, pool, client, fake, settings, monkeypatch, caplog
+):
+    preset = fake.add_preset("default")
+    bad = await start_run(aconn, pool, client, settings, preset.id, "bad")
+    good = await start_run(aconn, pool, client, settings, preset.id, "good")
+    fake.complete_turn(mid(bad), "ok")
+    fake.complete_turn(mid(good), "ok")
+
+    real = tracker._track
+    broken = {"on": True}
+
+    async def flaky(client, store, settings, run, now):
+        if run.id == bad.id and broken["on"]:
+            raise ValueError("malformed orchestrator payload")
+        return await real(client, store, settings, run, now)
+
+    monkeypatch.setattr(tracker, "_track", flaky)
+
+    assert await tracker.track_once(pool, client, settings, datetime.now(UTC)) == 1
+    assert f"run {bad.id}" in caplog.text and "malformed orchestrator payload" in caplog.text
+    assert (await state(aconn, good)).status == "handled"
+    assert (await state(aconn, bad)).status == "in-progress"
+
+    broken["on"] = False
+    assert await tracker.track_once(pool, client, settings, datetime.now(UTC)) == 1
+    assert (await state(aconn, bad)).status == "handled"

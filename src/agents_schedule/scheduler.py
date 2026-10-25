@@ -35,9 +35,6 @@ log = logging.getLogger(__name__)
 CHANNEL = "schedules_changed"
 """NOTIFY channel the api sends on every schedule write; it wakes the scheduler."""
 
-# First key of the two-key advisory lock that serialises one schedule's fires.
-_FIRE_LOCK = 0x73636874  # "scht"
-
 
 @dataclass(frozen=True)
 class TickResult:
@@ -79,9 +76,7 @@ async def _fire(
 ) -> _Fired | None:
     """Insert the schedule's due run, if any; None when nothing was due or it was recorded."""
     async with conn.transaction():
-        await conn.execute(
-            "SELECT pg_advisory_xact_lock(%s, hashtext(%s::text))", (_FIRE_LOCK, schedule_id)
-        )
+        await runs.fire_lock(conn, schedule_id)
         sched = await schedules.get(conn, schedule_id)
         if sched is None or not sched.enabled:  # changed since the tick listed it
             return None

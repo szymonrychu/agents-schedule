@@ -95,6 +95,8 @@ async def track_once(
                 moved += 1
         except (OrchestratorError, OrchestratorUnavailable) as exc:
             _log_transient(run, exc, now)
+        except Exception:
+            log.exception("run %s: unexpected tracking error, will retry", run.id)
     return moved
 
 

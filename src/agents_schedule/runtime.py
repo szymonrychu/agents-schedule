@@ -12,6 +12,7 @@ from agents_common.db import open_pool
 from agents_common.orchestrator import OrchestratorClient
 from agents_common.runtime import advisory_singleton, run_service
 from psycopg_pool import AsyncConnectionPool
+from starlette.types import ASGIApp
 
 from agents_schedule.api.app import create_app
 from agents_schedule.dispatcher import run_dispatcher
@@ -43,19 +44,23 @@ class _Server(uvicorn.Server):
         yield
 
 
+def _api_config(settings: Settings, app: ASGIApp) -> uvicorn.Config:
+    return uvicorn.Config(
+        app,
+        host=settings.http_host,
+        port=settings.http_port,
+        log_level=settings.log_level.lower(),
+        timeout_graceful_shutdown=int(settings.shutdown_grace_seconds),
+        proxy_headers=False,  # the allowlist must see the socket peer, never X-Forwarded-For
+    )
+
+
 async def _serve(settings: Settings, stop: asyncio.Event) -> None:
     pool = await open_pool(settings.database_url.get_secret_value(), min_size=1, max_size=10)
     client = _client(settings)
     try:
         app = create_app(settings, pool, client)
-        config = uvicorn.Config(
-            app,
-            host=settings.http_host,
-            port=settings.http_port,
-            log_level=settings.log_level.lower(),
-            timeout_graceful_shutdown=int(settings.shutdown_grace_seconds),
-        )
-        server = _Server(config)
+        server = _Server(_api_config(settings, app))
         serving = asyncio.create_task(server.serve())
         stopping = asyncio.create_task(stop.wait())
         await asyncio.wait({serving, stopping}, return_when=asyncio.FIRST_COMPLETED)

@@ -19,6 +19,16 @@ from psycopg.rows import class_row
 
 # Serialises claims, so the count-based caps hold with more than one claimer.
 _CLAIM_LOCK = 0x73636864  # "schd"
+# First key of the two-key advisory lock that serialises one schedule's inserts.
+_FIRE_LOCK = 0x73636874  # "scht"
+
+
+async def fire_lock(conn: psycopg.AsyncConnection, schedule_id: uuid.UUID) -> None:
+    """Take the schedule's transaction-scoped fire lock; shared by the scheduler and run now."""
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(%s, hashtext(%s::text))", (_FIRE_LOCK, schedule_id)
+    )
+
 
 _COLUMNS = (
     "id, schedule_id, trigger, fire_time, status, reason, attempts, session_slug, session_id, "

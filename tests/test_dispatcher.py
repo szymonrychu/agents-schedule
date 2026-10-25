@@ -463,3 +463,44 @@ async def test_run_dispatcher_resumes_then_wakes_on_new_run(aconn, pool, client,
         async with asyncio.timeout(10):
             await task
     assert len(fake.sessions) == 2
+
+
+async def test_unexpected_error_isolated_per_run(
+    aconn, pool, client, fake, settings, monkeypatch, caplog
+):
+    preset = fake.add_preset("default")
+    first = await add_schedule(aconn, preset.id, name="Bad")
+    second = await add_schedule(aconn, preset.id, name="Good")
+    bad = await add_run(aconn, first.id, FIRE)
+    good = await add_run(aconn, second.id, FIRE + timedelta(minutes=1))
+
+    real = dispatcher._send
+    broken = {"on": True}
+
+    async def flaky(pool, client, settings, run):
+        if run.id == bad.id and broken["on"]:
+            raise ValueError("malformed orchestrator payload")
+        await real(pool, client, settings, run)
+
+    monkeypatch.setattr(dispatcher, "_send", flaky)
+
+    # dispatch_once: the bad run is claimed and fails unexpectedly, the next call sends the good one
+    assert await dispatcher.dispatch_once(pool, client, settings)
+    assert f"run {bad.id}" in caplog.text and "malformed orchestrator payload" in caplog.text
+    assert await dispatcher.dispatch_once(pool, client, settings)
+    assert (await runs.get(aconn, good.id)).message_id is not None
+    stuck = await runs.get(aconn, bad.id)
+    assert (stuck.status, stuck.message_id) == ("in-progress", None)
+
+    # resume_pending: a failing run does not stop the others; the bad run is retried later
+    third = await add_schedule(aconn, preset.id, name="Third")
+    other = await add_run(aconn, third.id, FIRE + timedelta(minutes=2))
+    await runs.transition(aconn, other.id, "new", "in-progress", started_at=datetime.now(UTC))
+    assert await dispatcher.resume_pending(pool, client, settings) == 1
+    assert (await runs.get(aconn, other.id)).message_id is not None
+    assert (await runs.get(aconn, bad.id)).message_id is None
+
+    broken["on"] = False
+    assert await dispatcher.resume_pending(pool, client, settings) == 1
+    assert (await runs.get(aconn, bad.id)).message_id is not None
+    assert (creates(fake), posts(fake)) == (3, 3)

@@ -514,6 +514,23 @@ def test_two_workers_one_run_and_one_session_per_fire(api: Api, fake: Fake, make
 
     wait_for(fires_done, "two handled fires of every schedule", 2 * FIRE_WAIT)
 
+    # stop further fires, then wait until every run is settled: none `new`, none sent half-way
+    for s in schedules:
+        body = {k: s[k] for k in ("name", "cron", "timezone", "preset_id", "prompt")}
+        assert (
+            api.put(f"{BASE}/schedules/{s['id']}", json={**body, "enabled": False}).status_code
+            == 200
+        )
+
+    def settled() -> bool:
+        return all(
+            r["status"] != "new" and (r["status"] != "in-progress" or r["message_id"])
+            for s in schedules
+            for r in schedule_runs(api, s["id"])
+        )
+
+    wait_for(settled, "every run to be dispatched or ignored")
+
     creates = fake.creates()
     for s in schedules:
         runs = schedule_runs(api, s["id"])

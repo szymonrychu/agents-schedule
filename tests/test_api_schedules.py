@@ -1,6 +1,6 @@
 import uuid
 from collections.abc import AsyncIterator, Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import httpx
 import psycopg
@@ -207,13 +207,15 @@ async def test_preset_checked(make_http, preset, fake):
     def refuse(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("down", request=request)
 
-    async with OrchestratorClient(
-        "http://orchestrator", "t", transport=httpx.MockTransport(refuse)
-    ) as down:
-        async with make_http(orch=down) as http:
-            r = await http.post(f"{BASE}/schedules", json=body(preset, name="other"))
-            assert r.status_code == 503
-            assert r.json()["error"]["code"] == "orchestrator_unavailable"
+    async with (
+        OrchestratorClient(
+            "http://orchestrator", "t", transport=httpx.MockTransport(refuse)
+        ) as down,
+        make_http(orch=down) as http,
+    ):
+        r = await http.post(f"{BASE}/schedules", json=body(preset, name="other"))
+        assert r.status_code == 503
+        assert r.json()["error"]["code"] == "orchestrator_unavailable"
 
     fake.fail_next("get_preset", 500)
     async with make_http() as http:
@@ -229,7 +231,7 @@ async def test_preview(http):
     fires = [datetime.fromisoformat(x) for x in r.json()["next_fires"]]
     assert len(fires) == 3
     assert all(f.hour == 9 and f.minute == 0 for f in fires)
-    assert all(f.utcoffset().total_seconds() == 9 * 3600 for f in fires)
+    assert all(f.utcoffset() == timedelta(hours=9) for f in fires)
     assert fires == sorted(fires)
     assert (fires[1] - fires[0]).days == 1
 

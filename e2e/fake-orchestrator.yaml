@@ -1,0 +1,158 @@
+# The agents-common FakeOrchestrator (the library ships it as a class with in-process controls
+# only) served from the agents-schedule image. control.py adds what a test outside the pod needs,
+# all under /_ and without the bearer token: POST /_presets, GET /_calls (every /api/v1 request
+# with its body and answered status), GET /_state, POST /_messages/{id}/complete and
+# POST /_messages/{id}/fail_turn. The token comes from Secret fake-orchestrator-token.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fake-orchestrator-control
+data:
+  control.py: |
+    import json
+    import os
+
+    from agents_common.fake_orchestrator import FakeOrchestrator
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    fake = FakeOrchestrator(os.environ["FAKE_ORCHESTRATOR_TOKEN"])
+    calls = []
+
+
+    async def add_preset(request: Request):
+        body = await request.json()
+        ref = fake.add_preset(body["name"], spec=body.get("spec"))
+        return JSONResponse({"id": str(ref.id), "name": ref.name}, status_code=201)
+
+
+    async def get_calls(request: Request):
+        return JSONResponse(calls)
+
+
+    async def get_state(request: Request):
+        return JSONResponse(
+            {"sessions": list(fake.sessions.values()), "messages": list(fake.messages.values())}
+        )
+
+
+    def _message_id(request: Request):
+        mid = int(request.path_params["id"])
+        return mid if mid in fake.messages else None
+
+
+    async def complete(request: Request):
+        mid = _message_id(request)
+        if mid is None:
+            return JSONResponse({"error": "no such message"}, status_code=404)
+        body = await request.json() if await request.body() else {}
+        fake.complete_turn(mid, body.get("text", "done"))
+        return JSONResponse(fake.messages[mid])
+
+
+    async def fail_turn(request: Request):
+        mid = _message_id(request)
+        if mid is None:
+            return JSONResponse({"error": "no such message"}, status_code=404)
+        fake.messages[mid]["status"] = "sent"
+        fake.messages[mid]["turn"] = {"status": "failed"}
+        return JSONResponse(fake.messages[mid])
+
+
+    fake.app.router.routes[:0] = [
+        Route("/_presets", add_preset, methods=["POST"]),
+        Route("/_calls", get_calls),
+        Route("/_state", get_state),
+        Route("/_messages/{id}/complete", complete, methods=["POST"]),
+        Route("/_messages/{id}/fail_turn", fail_turn, methods=["POST"]),
+    ]
+
+
+    class Recorder:
+        """ASGI wrapper recording every /api/v1 request: method, path, JSON body, status."""
+
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http" or not scope["path"].startswith("/api/v1/"):
+                return await self.inner(scope, receive, send)
+            chunks, more = [], True
+            while more:
+                event = await receive()
+                chunks.append(event.get("body", b""))
+                more = event.get("more_body", False)
+            raw = b"".join(chunks)
+            try:
+                body = json.loads(raw) if raw else None
+            except ValueError:
+                body = None
+            call = {"method": scope["method"], "path": scope["path"], "body": body, "status": None}
+            calls.append(call)
+            replay = [{"type": "http.request", "body": raw, "more_body": False}]
+
+            async def replayed():
+                return replay.pop(0) if replay else await receive()
+
+            async def recording(event):
+                if event["type"] == "http.response.start":
+                    call["status"] = event["status"]
+                await send(event)
+
+            await self.inner(scope, replayed, recording)
+
+
+    app = Recorder(fake.app)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-orchestrator
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: fake-orchestrator}
+  template:
+    metadata:
+      labels: {app: fake-orchestrator}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: fake
+          image: agents-schedule:e2e
+          imagePullPolicy: Never
+          command: ["python", "-m", "uvicorn", "--app-dir", "/fake", "control:app", "--host", "0.0.0.0", "--port", "8000"]
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: FAKE_ORCHESTRATOR_TOKEN
+              valueFrom:
+                secretKeyRef: {name: fake-orchestrator-token, key: token}
+          ports:
+            - {name: http, containerPort: 8000}
+          readinessProbe:
+            httpGet: {path: /_calls, port: http}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: control, mountPath: /fake, readOnly: true}
+      volumes:
+        - name: control
+          configMap: {name: fake-orchestrator-control}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-orchestrator
+spec:
+  selector: {app: fake-orchestrator}
+  ports:
+    - {name: http, port: 8000, targetPort: http}

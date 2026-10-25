@@ -2,16 +2,28 @@
 python = "3.14.6"
 uv = "0.12.23"
 ruff = "0.15.20"
-"pipx:pytest" = "9.1.1"
+helm = "4.2.4"
 
 [tasks.test]
 description = "Run test"
-run = "pytest"
+run = "uv run pytest"
 
 [tasks.lint]
 description = "Run lint"
-run = "ruff check ."
+run = "uv run ruff check . && uv run ruff format --check ."
 
 [tasks.fmt]
 description = "Run fmt"
-run = "ruff format ."
+run = "uv run ruff format ."
+
+[tasks."test:e2e"]
+description = "Run the kind end-to-end test"
+run = "bash scripts/e2e.sh"
+
+[tasks."test:chart"]
+description = "Run the chart render tests"
+run = "uv run pytest tests/test_chart.py tests/test_chart_ingress.py"
+
+[tasks."lint:chart"]
+description = "Lint the helm chart"
+run = "helm lint chart/agents-schedule --set postgres.url=postgresql://x/y --set orchestrator.url=http://o --set orchestrator.token=t"

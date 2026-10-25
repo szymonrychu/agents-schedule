@@ -1,0 +1,17 @@
+# Chart values of the kind e2e (scripts/e2e.sh adds postgres.url and orchestrator.token).
+image:
+  repository: agents-schedule
+  tag: e2e
+  pullPolicy: Never
+
+orchestrator:
+  url: http://fake-orchestrator:8000
+
+env:
+  SCHED_TICK_SECONDS: "2"
+  SCHED_POLL_SECONDS: "1"
+  SCHED_MAX_IN_PROGRESS: "20"
+
+components:
+  worker:
+    replicas: 2

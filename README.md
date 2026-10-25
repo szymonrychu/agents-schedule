@@ -124,3 +124,7 @@ Prompt placeholders: `{schedule_name}` and `{fired_at}` (ISO 8601, in the schedu
 ### Versioning
 
 `/schedules/api/v1` is additive-only: new routes, fields, query parameters and error codes may appear, and existing ones are never removed, renamed or retyped. A breaking change would be a new `/schedules/api/v2`. Clients must ignore fields they do not know. agents-web vendors `openapi.json`.
+
+## Releases
+
+- v0.1.0 (2026-10-25): tag v0.1.0 on commit 6cfa955; image `harbor.szymonrichert.pl/containers/agents-schedule:6cfa955` (sha7 6cfa955); chart `oci://harbor.szymonrichert.pl/charts/agents-schedule` version 0.1.0. Published chart versions are immutable.

@@ -34,3 +34,7 @@ Lessons that outlive a session. Newest first.
 ## 2026-10-25 - why this component exists
 
 agents-schedule is the time-driven sibling of agents-webhook: it turns cron schedules into agent cluster runs through the orchestrator API, keeping its own database. It consumes the agents-common library (settings, Postgres pool, migrator, guarded queue transitions, orchestrator client, run tracker) and the orchestrator service tokens issued by agents-webhook-microservice.
+
+## 2026-10-25 - released v0.1.0
+
+Tagged merged main commit 6cfa955 as annotated tag v0.1.0 (design D14, approval A6). CI run 40234530135: `chart-publish-tag` published chart 0.1.0 (appVersion 6cfa955); the main `images` job had published image `containers/agents-schedule:6cfa955`. Both verified from the registry. The deployment pins chart 0.1.0 and image 6cfa955.

@@ -1,4 +1,4 @@
-"""The CI workflow lints, tests and publishes the image and chart; chart-version.sh names main builds."""
+"""CI workflow publishes the image and chart; chart-version.sh names main builds."""
 
 import re
 import shutil

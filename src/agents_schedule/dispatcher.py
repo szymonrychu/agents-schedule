@@ -53,21 +53,26 @@ CHANNEL = "runs_new"
 MAX_BACKOFF_SECONDS = 300.0
 
 
+def _uuid(run_id: common_runs.RunId) -> uuid.UUID:
+    """The runs-table id of an agents-common RunRef id (`str(run.id)`)."""
+    return uuid.UUID(str(run_id))
+
+
 class RunsStore:
     """agents-common `RunStore` over the runs table; every write is guarded on in-progress."""
 
     def __init__(self, pool: AsyncConnectionPool) -> None:
         self._pool = pool
 
-    async def _set(self, run_id: common_runs.RunId, **fields: Any) -> bool:
+    async def _set(self, run_id: uuid.UUID, **fields: Any) -> bool:
         async with self._pool.connection() as conn:
-            return await runs.set_fields(conn, uuid.UUID(str(run_id)), "in-progress", **fields)
+            return await runs.set_fields(conn, run_id, "in-progress", **fields)
 
-    async def _move(self, run_id: common_runs.RunId, status: str, **fields: Any) -> bool:
+    async def _move(self, run_id: uuid.UUID, status: str, **fields: Any) -> bool:
         async with self._pool.connection() as conn:
             return await runs.transition(
                 conn,
-                uuid.UUID(str(run_id)),
+                run_id,
                 "in-progress",
                 status,
                 finished_at=datetime.now(UTC),
@@ -75,15 +80,15 @@ class RunsStore:
             )
 
     async def set_session(self, run_id: common_runs.RunId, session_id: str) -> None:
-        await self._set(run_id, session_id=uuid.UUID(session_id))
+        await self._set(_uuid(run_id), session_id=uuid.UUID(session_id))
 
     async def set_message(self, run_id: common_runs.RunId, message_id: str) -> None:
-        await self._set(run_id, message_id=message_id)
+        await self._set(_uuid(run_id), message_id=message_id)
 
     async def finish(
         self, run_id: common_runs.RunId, status: common_runs.RunStatus, reason: str | None
     ) -> bool:
-        return await self._move(run_id, status, reason=reason)
+        return await self._move(_uuid(run_id), status, reason=reason)
 
     async def set_slug(self, run_id: uuid.UUID, slug: str) -> bool:
         return await self._set(run_id, session_slug=slug)
@@ -227,7 +232,7 @@ async def _send(
         sent = await common_runs.dispatch(client, store, ref, text, marker)
         log.info("run %s: dispatched to session %s", run.id, sent.session_id)
     except _PresetGone:
-        await store.finish(run.id, "failed", "preset_not_found")
+        await store.finish(ref.id, "failed", "preset_not_found")
         log.warning("run %s: preset %s not found", run.id, binding.preset_id)
     except NotFound as exc:  # runs.dispatch already failed the run with its reason
         log.warning("run %s: failed: %s", run.id, exc)
@@ -236,7 +241,7 @@ async def _send(
         await store.record_attempt(run.id, attempts, settings.dispatch_max_attempts)
         log.warning("run %s: orchestrator unavailable (attempt %d): %s", run.id, attempts, exc)
     except OrchestratorError as exc:
-        await store.finish(run.id, "failed", f"orchestrator_refused: {exc.code}")
+        await store.finish(ref.id, "failed", f"orchestrator_refused: {exc.code}")
         log.warning("run %s: orchestrator refused: %s", run.id, exc)
 
 

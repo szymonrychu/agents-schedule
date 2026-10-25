@@ -16,7 +16,7 @@ from agents_schedule.db import runs, schedules
 
 router = APIRouter()
 
-Status = Literal["new", "in-progress", "done", "failed", "ignored"]
+Status = Literal["new", "in-progress", "handled", "failed", "ignored"]
 
 
 def _parse_id(raw: str, what: str) -> uuid.UUID:

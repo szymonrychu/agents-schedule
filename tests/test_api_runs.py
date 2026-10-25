@@ -120,7 +120,7 @@ async def test_run_lists(http, pool):
     assert [x["id"] for x in r.json()] == [str(other.id)]
     r = await http.get(f"{BASE}/runs", params={"status": "in-progress"})
     assert [x["id"] for x in r.json()] == [str(other.id)]
-    r = await http.get(f"{BASE}/runs", params={"status": "done"})
+    r = await http.get(f"{BASE}/runs", params={"status": "handled"})
     assert r.json() == []
 
 

@@ -1,0 +1,9 @@
+{{- include "agents-schedule.validate" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agents-schedule.fullname" . }}-settings
+  labels:
+    {{- include "agents-schedule.labels" . | nindent 4 }}
+data:
+  {{- include "agents-schedule.config" . | nindent 2 }}

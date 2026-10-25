@@ -1,0 +1,76 @@
+image:
+  repository: harbor.szymonrichert.pl/containers/agents-schedule
+  # Defaults to the chart appVersion (the short sha CI sets when it packages the chart).
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Postgres is required; there is no in-chart database (agents-helmfile deploys agents-schedule-db).
+# Set exactly one of url and existingSecret; existingSecretKey names the key holding the DSN.
+postgres:
+  url: ""
+  existingSecret: ""
+  existingSecretKey: uri
+
+# The orchestrator service port the api and worker talk to. url is required; set token or
+# tokenSecret (tokenSecret wins). The token is mounted as a file named by
+# SCHED_ORCHESTRATOR_TOKEN_FILE, never passed as an env value.
+orchestrator:
+  url: ""
+  token: ""
+  tokenSecret:
+    name: ""
+    key: token
+
+# Extra SCHED_* settings (SCHED_ALLOWED_CIDRS, SCHED_MAX_IN_PROGRESS, ...); keys must start
+# with SCHED_.
+env: {}
+
+# Pod annotations on api only (oauth2-proxy / SSO). The worker has no Service.
+components:
+  api:
+    replicas: 1
+    port: 8000
+    podAnnotations: {}
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {memory: 256Mi}
+  worker:
+    replicas: 1
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {memory: 256Mi}
+
+podLabels: {}
+terminationGracePeriodSeconds: 30
+
+service:
+  type: ClusterIP
+  port: 80
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,116 @@
+{{- $tag := default .Chart.AppVersion .Values.image.tag }}
+{{- $image := printf "%s:%s" .Values.image.repository $tag }}
+{{- $settingsSum := include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+{{- $tokenKey := include "agents-schedule.tokenSecretKey" . }}
+{{- range $component := list "api" "worker" }}
+{{- $cfg := index $.Values.components $component }}
+{{- $labels := dict "context" $ "component" $component }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agents-schedule.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "agents-schedule.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  replicas: {{ $cfg.replicas | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "agents-schedule.componentLabels" $labels | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/settings: {{ $settingsSum }}
+        {{- with $cfg.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "agents-schedule.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $component }}
+        {{- with $.Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "agents-schedule.imagePullSecrets" $ | nindent 6 }}
+      serviceAccountName: {{ include "agents-schedule.serviceAccountName" $ }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      {{- with $.Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: migrate
+          {{- with $.Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: {{ $image | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: ["sched"]
+          args: ["migrate"]
+          {{- include "agents-schedule.env" $ | nindent 10 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: orchestrator-token
+              mountPath: {{ include "agents-schedule.tokenDir" $ }}
+              readOnly: true
+      containers:
+        - name: {{ $component }}
+          {{- with $.Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: {{ $image | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: ["sched"]
+          args: [{{ $component | quote }}]
+          {{- include "agents-schedule.env" $ | nindent 10 }}
+          {{- if eq $component "api" }}
+          ports:
+            - name: http
+              containerPort: {{ $cfg.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ $cfg.port }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ $cfg.port }}
+          {{- end }}
+          {{- with $cfg.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: orchestrator-token
+              mountPath: {{ include "agents-schedule.tokenDir" $ }}
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: orchestrator-token
+          secret:
+            secretName: {{ include "agents-schedule.tokenSecretName" $ }}
+            items:
+              - key: {{ $tokenKey }}
+                path: token
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

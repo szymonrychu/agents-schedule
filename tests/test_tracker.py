@@ -55,7 +55,9 @@ def settings(db_url: str) -> Settings:
     )
 
 
-async def start_run(aconn, pool, client, settings, preset_id: uuid.UUID, name: str) -> runs.Run:
+async def start_run(
+    aconn, pool, client, settings, preset_id: uuid.UUID, name: str, prompt: str = "go"
+) -> runs.Run:
     """A run of a fresh schedule, dispatched: in-progress with a session and a message."""
     sched = await schedules.create(
         aconn,
@@ -63,7 +65,7 @@ async def start_run(aconn, pool, client, settings, preset_id: uuid.UUID, name: s
         cron="0 3 * * *",
         timezone="Europe/Warsaw",
         preset_id=preset_id,
-        prompt="go",
+        prompt=prompt,
         enabled=True,
     )
     run = await runs.insert_manual(aconn, sched.id, datetime.now(UTC), "new")
@@ -96,6 +98,42 @@ async def test_completed_turn_handled(aconn, pool, client, fake, settings):
     completed = fake.messages[mid(run)]["turn"]["completed_at"]
     assert got.finished_at == datetime.fromisoformat(completed)
     assert await tracker.track_once(pool, client, settings, datetime.now(UTC)) == 0
+
+
+async def test_command_prompt_run_handled(aconn, pool, client, fake, settings):
+    preset = fake.add_preset("default")
+    run = await start_run(aconn, pool, client, settings, preset.id, "slash", "/review-pr 12")
+    now = datetime.now(UTC)
+
+    # the command has no outcome yet: still running
+    assert await tracker.track_once(pool, client, settings, now) == 0
+    assert (await state(aconn, run)).status == "in-progress"
+
+    fake.complete_command(mid(run), "ok")
+
+    assert await tracker.track_once(pool, client, settings, now) == 1
+    got = await state(aconn, run)
+    assert (got.status, got.reason) == ("handled", None)
+    assert got.finished_at is not None
+    assert await tracker.track_once(pool, client, settings, now) == 0
+
+
+async def test_command_prompt_run_failed_reason(aconn, pool, client, fake, settings):
+    preset = fake.add_preset("default")
+    unknown = await start_run(aconn, pool, client, settings, preset.id, "unknown", "/nope")
+    cancelled = await start_run(aconn, pool, client, settings, preset.id, "cancel", "/review-pr 1")
+
+    fake.fail_command(mid(unknown), "unknown_command")
+    fake.fail_command(mid(cancelled), "cancelled", state="cancelled")
+
+    assert await tracker.track_once(pool, client, settings, datetime.now(UTC)) == 2
+
+    got = {r.id: await state(aconn, r) for r in (unknown, cancelled)}
+    assert {rid: (g.status, g.reason) for rid, g in got.items()} == {
+        unknown.id: ("failed", "command_unknown_command"),
+        cancelled.id: ("failed", "command_cancelled"),
+    }
+    assert all(g.finished_at is not None for g in got.values())
 
 
 async def test_failures_have_reasons(aconn, pool, client, fake, settings):

@@ -127,4 +127,14 @@ Prompt placeholders: `{schedule_name}` and `{fired_at}` (ISO 8601, in the schedu
 
 ## Releases
 
+Every green push to `main` ends with the `release` job in `.github/workflows/ci.yaml`, which needs every other job of the run, so releases after v0.1.0 are automatic:
+
+- `scripts/next_version.py` computes the version from the conventional commits since the last `vX.Y.Z` git tag (every commit, branch commits behind merge commits included): a `type!:` subject or a `BREAKING CHANGE:` footer bumps major (also on 0.x), `feat` bumps minor, anything else bumps patch. It bumps from v0.1.0 below and never restarts at 0.1.0.
+- The job copies the run's image `harbor.szymonrichert.pl/containers/agents-schedule:<sha7>` to the tags `X.Y.Z`, `X.Y` and `X` with `regctl image copy` (manifest only, no layer upload), then pushes git tag `vX.Y.Z` with the job token.
+- When `HEAD` is already in a `vX.Y.Z` tag (a re-run, or a newer commit already released) the job skips everything after the version step. Release jobs run one at a time (concurrency group `release`); retry a failed one with "Re-run failed jobs".
+- agents-helmfile must pin `X.Y.Z`, never `<sha7>`: Harbor retention prunes `<sha7>` tags within hours, semver tags survive it.
+- The chart is published only from `main`, as `<version>-main.<sha7>` (`scripts/chart-version.sh`); a tag publishes no chart.
+
+History:
+
 - v0.1.0 (2026-10-25): tag v0.1.0 on commit 6cfa955; image `harbor.szymonrichert.pl/containers/agents-schedule:6cfa955` (sha7 6cfa955); chart `oci://harbor.szymonrichert.pl/charts/agents-schedule` version 0.1.0. Published chart versions are immutable.

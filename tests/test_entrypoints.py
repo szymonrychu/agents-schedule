@@ -141,6 +141,7 @@ def test_migrate_command(empty_db_url: str):
     again = sched("migrate", env=env_for(empty_db_url))
     assert again.returncode == 0
     assert "0001_schedules.sql" not in again.stdout
+    assert "0002_prompt_jinja.sql" not in again.stdout
 
 
 def test_single_worker_fires(db_url: str, workers):

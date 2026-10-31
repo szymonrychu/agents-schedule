@@ -24,10 +24,15 @@ class PreviewIn(BaseModel):
 
     cron: str
     timezone: str | None = None
+    prompt: str | None = Field(default=None, max_length=16384)
+    schedule_name: str | None = None
+    preset_id: str | None = None
 
 
 class PreviewView(BaseModel):
     next_fires: list[datetime]
+    rendered: str | None = None
+    variables: list[str] = []
 
 
 class RunView(BaseModel):

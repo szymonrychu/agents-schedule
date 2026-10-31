@@ -37,7 +37,8 @@ ERRORS = {
     403: "source address is not allowed (forbidden)",
     404: "not found (not_found)",
     409: "a schedule with this name already exists (conflict)",
-    422: "invalid request (invalid_request, invalid_cron, invalid_timezone, unknown_preset)",
+    422: "invalid request (invalid_request, invalid_cron, invalid_timezone, unknown_preset, "
+    "invalid_prompt)",
     503: "orchestrator unreachable or rejecting the token (orchestrator_unavailable, "
     "orchestrator_auth_failed)",
 }

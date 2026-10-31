@@ -57,3 +57,9 @@ agents-schedule is the time-driven sibling of agents-webhook: it turns cron sche
 ## 2026-10-25 - released v0.1.0
 
 Tagged merged main commit 6cfa955 as annotated tag v0.1.0 (design D14, approval A6). CI run 40234530135: `chart-publish-tag` published chart 0.1.0 (appVersion 6cfa955); the main `images` job had published image `containers/agents-schedule:6cfa955`. Both verified from the registry. The deployment pins chart 0.1.0 and image 6cfa955.
+
+## 2026-10-31 - prompts are Jinja templates (agents-ui-improvements B2)
+
+- Prompts render through `agents_common.templating` (v0.5.0, sandbox, StrictUndefined). Context: `schedule_name`, `fired_at` (ISO, schedule tz), `preset` (the preset id; the dispatcher knows no preset name), `now` (ISO, UTC). No `{x}` compatibility: migration `0002_prompt_jinja.sql` rewrites stored `{schedule_name}`/`{fired_at}` to the `{{ }}` form, skipping already doubled braces so a rerun changes nothing.
+- A prompt that does not render at dispatch fails the run `prompt_invalid: <message>` (no retry: it would never succeed). Create/PUT do not validate the prompt; preview does (422 `invalid_prompt`, message prefixed `line N:`).
+- `POST /schedules/preview` takes optional `prompt`, `schedule_name`, `preset_id` and returns `rendered` and `variables` besides `next_fires`; render runs in a thread because common renders in a child process.

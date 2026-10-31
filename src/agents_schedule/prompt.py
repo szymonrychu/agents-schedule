@@ -6,19 +6,30 @@ import re
 import uuid
 from datetime import datetime
 
+from agents_common import templating
+
 SLUG_MAX = 40
 _BASE_MAX = 24
-_PLACEHOLDER = re.compile(r"\{(schedule_name|fired_at)\}")
 _NOT_LABEL = re.compile(r"[^a-z0-9]+")
 
 
-def render_prompt(template: str, schedule_name: str, fired_at: datetime) -> str:
-    """Replace exactly `{schedule_name}` and `{fired_at}` (ISO 8601), in one pass.
+def prompt_context(
+    schedule_name: str, fired_at: datetime, preset: str, now: datetime
+) -> dict[str, str]:
+    """The variables a prompt template can read; datetimes are ISO 8601."""
+    return {
+        "schedule_name": schedule_name,
+        "fired_at": fired_at.isoformat(),
+        "preset": preset,
+        "now": now.isoformat(),
+    }
 
-    Every other brace stays as written, and a replaced value is never expanded again.
-    """
-    values = {"schedule_name": schedule_name, "fired_at": fired_at.isoformat()}
-    return _PLACEHOLDER.sub(lambda m: values[m.group(1)], template)
+
+def render_prompt(
+    template: str, schedule_name: str, fired_at: datetime, preset: str, now: datetime
+) -> str:
+    """Render the prompt Jinja template; raises `TemplateError` when it does not render."""
+    return templating.render(template, prompt_context(schedule_name, fired_at, preset, now))
 
 
 def _slugify(text: str, max_len: int) -> str:

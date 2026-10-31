@@ -236,6 +236,39 @@ async def test_preview(http):
     assert (fires[1] - fires[0]).days == 1
 
 
+async def test_preview_prompt(http):
+    r = await http.post(
+        f"{BASE}/schedules/preview",
+        json={
+            "cron": "0 9 * * *",
+            "timezone": "UTC",
+            "prompt": "{{ schedule_name }} at {{ fired_at }} {{ preset }}",
+            "schedule_name": "nightly",
+            "preset_id": "p-1",
+        },
+    )
+    assert r.status_code == 200
+    data = r.json()
+    first = datetime.fromisoformat(data["next_fires"][0]).isoformat()
+    assert data["rendered"] == f"nightly at {first} p-1"
+    assert data["variables"] == ["fired_at", "preset", "schedule_name"]
+
+    r = await http.post(f"{BASE}/schedules/preview", json={"cron": "0 9 * * *"})
+    assert r.json()["rendered"] is None
+    assert r.json()["variables"] == []
+
+
+async def test_preview_prompt_errors(http):
+    base = {"cron": "0 9 * * *", "timezone": "UTC"}
+    r = await http.post(f"{BASE}/schedules/preview", json=base | {"prompt": "{{ nope }}"})
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "invalid_prompt"
+    assert "nope" in r.json()["error"]["message"]
+    r = await http.post(f"{BASE}/schedules/preview", json=base | {"prompt": "a\n{% if %}"})
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "invalid_prompt"
+
+
 async def test_conflict_and_not_found(http, preset):
     first = (await http.post(f"{BASE}/schedules", json=body(preset))).json()
     r = await http.post(f"{BASE}/schedules", json=body(preset))

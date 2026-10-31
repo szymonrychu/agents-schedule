@@ -29,7 +29,7 @@ def add_run(conn, schedule_id, fire="2026-01-01T00:00:00Z", **cols) -> None:
 
 def test_migrate_idempotent(empty_db_url, settings_for):
     settings = settings_for(empty_db_url)
-    assert migrate(settings) == ["0001_schedules.sql"]
+    assert migrate(settings) == ["0001_schedules.sql", "0002_prompt_jinja.sql"]
     assert migrate(settings) == []
     with psycopg.connect(empty_db_url) as conn:
         tables = {
@@ -45,7 +45,10 @@ def test_concurrent_migrate_applies_once(empty_db_url, settings_for):
     settings = settings_for(empty_db_url)
     with ThreadPoolExecutor(4) as pool:
         results = list(pool.map(lambda _: migrate(settings), range(4)))
-    assert sorted(name for applied in results for name in applied) == ["0001_schedules.sql"]
+    assert sorted(name for applied in results for name in applied) == [
+        "0001_schedules.sql",
+        "0002_prompt_jinja.sql",
+    ]
 
 
 def test_runs_unique_schedule_fire_time(conn):
@@ -102,3 +105,35 @@ def test_schedule_name_and_prompt_bounds(conn):
             "VALUES (%s, 'p', '* * * * *', 'UTC', %s, '', now())",
             (uuid.uuid4(), uuid.uuid4()),
         )
+
+
+def test_prompt_jinja_migration_converts_placeholders(empty_db_url, settings_for):
+    from importlib import resources
+
+    sql_text = (
+        resources.files("agents_schedule") / "migrations" / "0002_prompt_jinja.sql"
+    ).read_text()
+    migrate(settings_for(empty_db_url))
+    cases = {
+        "old": "Run {schedule_name} at {fired_at}; keep {other} {} {schedule_name",
+        "done": "Run {{ schedule_name }} at {{ fired_at }}",
+        "tight": "{{schedule_name}} {{fired_at}}",
+        "plain": "no placeholders",
+    }
+    expected = {
+        "old": "Run {{ schedule_name }} at {{ fired_at }}; keep {other} {} {schedule_name",
+        "done": "Run {{ schedule_name }} at {{ fired_at }}",
+        "tight": "{{schedule_name}} {{fired_at}}",
+        "plain": "no placeholders",
+    }
+    with psycopg.connect(empty_db_url, autocommit=True) as conn:
+        for name, prompt in cases.items():
+            conn.execute(
+                "INSERT INTO schedules (id, name, cron, timezone, preset_id, prompt, armed_at) "
+                "VALUES (%s, %s, '0 3 * * *', 'UTC', %s, %s, now())",
+                (uuid.uuid4(), name, uuid.uuid4(), prompt),
+            )
+        for _ in range(2):  # the second run is a no-op
+            conn.execute(sql_text)
+            got = dict(conn.execute("SELECT name, prompt FROM schedules").fetchall())
+            assert got == expected

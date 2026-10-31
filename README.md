@@ -47,10 +47,14 @@ Every process reads one validated `SCHED_*` environment. A bad or missing variab
 | `SCHED_POLL_SECONDS` | `10` | interval for polling running sessions (1..300) |
 | `SCHED_DISPATCH_MAX_ATTEMPTS` | `5` | dispatch attempts before a run fails (1..20) |
 | `SCHED_RUN_TIMEOUT_SECONDS` | `3600` | a run still going after this is failed so a stuck turn cannot hold a slot (60..86400) |
+| `SCHED_ADMIN_TOKENS_FILE` | - | file of bearer tokens, one per line; setting it starts the token-gated admin listener |
+| `SCHED_ADMIN_PORT` | `8001` | admin listener port (1..65535, must differ from `SCHED_HTTP_PORT`) |
 
 ## API
 
 Base path `/schedules/api/v1`. JSON in and out. The api is meant for the oauth2-proxy sidecar or a port-forward: it refuses any socket peer outside `SCHED_ALLOWED_CIDRS` with `403 forbidden` (forwarding headers are never read). `GET /healthz` and `GET /readyz` (`503 not_ready` when the database is unreachable) are outside the base path and exempt from the allowlist. The machine-readable contract is `openapi.json`, regenerated with `uv run python -m agents_schedule.api.openapi > openapi.json`; a test fails when it drifts from the app or when a route is missing from this section.
+
+Admin listener: when `SCHED_ADMIN_TOKENS_FILE` is set the api process also serves the same schedule and run routes (same base path, including run now) on `SCHED_ADMIN_PORT`, guarded by `agents_common.service_gate.ServiceTokenGate` instead of the source allowlist: `401 unauthorized` unless `Authorization: Bearer <token>` matches a token of the file (constant-time compare; `GET /healthz` and `GET /readyz` are exempt). It serves no OpenAPI. The UI port is unchanged. The chart turns it on with `admin.enabled` and `admin.tokensSecret.name`.
 
 Every error has the shape `{"error": {"code": "<code>", "message": "<text>"}}`. Codes: `forbidden` (403), `not_found` (404; also a malformed id), `method_not_allowed` (405), `conflict` (409), `invalid_request` (422; body or query fails validation, unknown body fields included), `invalid_cron` and `invalid_timezone` (422), `unknown_preset` (422; the orchestrator has no such preset), `orchestrator_unavailable` (503; the orchestrator cannot be reached) and `orchestrator_auth_failed` (503; it rejected `SCHED_ORCHESTRATOR_TOKEN`).
 

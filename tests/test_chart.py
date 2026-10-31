@@ -156,3 +156,42 @@ def test_env_and_port_reach_the_configmap():
     api = deployments(docs)["api"]["spec"]["template"]["spec"]["containers"][0]
     assert api["readinessProbe"]["httpGet"]["port"] == 9000
     assert api["ports"][0]["containerPort"] == 9000
+
+
+ADMIN = {"admin": {"enabled": True, "tokensSecret": {"name": "sched-admin-tokens"}}}
+
+
+def test_admin_off_by_default():
+    docs = render()
+    api = deployments(docs)["api"]["spec"]["template"]["spec"]["containers"][0]
+    assert [p["name"] for p in api["ports"]] == ["http"]
+    cm = next(d for d in docs if d["kind"] == "ConfigMap")
+    assert "SCHED_ADMIN_TOKENS_FILE" not in cm["data"]
+    svc = next(d for d in docs if d["kind"] == "Service")
+    assert [p["name"] for p in svc["spec"]["ports"]] == ["http"]
+
+
+def test_admin_listener_wired():
+    docs = render(ADMIN)
+    spec = deployments(docs)["api"]["spec"]["template"]["spec"]
+    (api,) = spec["containers"]
+    assert {"name": "admin", "containerPort": 8001, "protocol": "TCP"} in api["ports"]
+    mounts = {m["name"]: m for m in api["volumeMounts"]}
+    assert mounts["admin-tokens"]["readOnly"] is True
+    vol = next(v for v in spec["volumes"] if v["name"] == "admin-tokens")
+    assert vol["secret"]["secretName"] == "sched-admin-tokens"
+    cm = next(d for d in docs if d["kind"] == "ConfigMap")
+    assert cm["data"]["SCHED_ADMIN_PORT"] == "8001"
+    assert cm["data"]["SCHED_ADMIN_TOKENS_FILE"] == mounts["admin-tokens"]["mountPath"] + "/tokens"
+    worker = deployments(docs)["worker"]["spec"]["template"]["spec"]
+    assert all(v["name"] != "admin-tokens" for v in worker["volumes"])
+    svc = next(d for d in docs if d["kind"] == "Service")
+    assert {"name": "admin", "port": 8001, "targetPort": "admin", "protocol": "TCP"} in svc["spec"][
+        "ports"
+    ]
+
+
+def test_admin_requires_secret_name():
+    proc = _run(_merge(BASE, {"admin": {"enabled": True}}))
+    assert proc.returncode != 0
+    assert "admin.tokensSecret.name" in proc.stderr

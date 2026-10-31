@@ -6,6 +6,7 @@ import ipaddress
 import logging
 
 from agents_common.orchestrator import OrchestratorClient
+from agents_common.service_gate import ServiceTokenGate
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -57,7 +58,7 @@ class SourceAllowlist:
         await response(scope, receive, send)
 
 
-def create_app(
+def _build_app(
     settings: Settings, pool: AsyncConnectionPool, client: OrchestratorClient
 ) -> FastAPI:
     app = FastAPI(title="agents-schedule", docs_url=None, redoc_url=None, openapi_url=None)
@@ -97,5 +98,25 @@ def create_app(
 
     app.include_router(schedules.router, prefix=PREFIX)
     app.include_router(runs.router, prefix=PREFIX)
+    return app
+
+
+def create_app(
+    settings: Settings, pool: AsyncConnectionPool, client: OrchestratorClient
+) -> FastAPI:
+    """The ui app: every route behind the source allowlist."""
+    app = _build_app(settings, pool, client)
     app.add_middleware(SourceAllowlist, networks=settings.api_networks())
+    return app
+
+
+def create_admin_app(
+    settings: Settings,
+    pool: AsyncConnectionPool,
+    client: OrchestratorClient,
+    tokens: list[str],
+) -> FastAPI:
+    """The admin app: the same routes behind bearer service tokens instead of the allowlist."""
+    app = _build_app(settings, pool, client)
+    app.add_middleware(ServiceTokenGate, tokens=tokens)
     return app

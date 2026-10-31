@@ -24,6 +24,8 @@ class Settings(BaseServiceSettings):
     poll_seconds: float = Field(10, ge=1, le=300)
     dispatch_max_attempts: int = Field(5, ge=1, le=20)
     run_timeout_seconds: int = Field(3600, ge=60, le=86400)
+    admin_port: int = Field(8001, ge=1, le=65535)
+    admin_tokens_file: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -38,6 +40,12 @@ class Settings(BaseServiceSettings):
                 " and SCHED_ORCHESTRATOR_TOKEN_FILE"
             )
         return data
+
+    @model_validator(mode="after")
+    def _distinct_admin_port(self) -> "Settings":
+        if self.admin_tokens_file and self.admin_port == self.http_port:
+            raise ValueError("SCHED_ADMIN_PORT::must differ from SCHED_HTTP_PORT")
+        return self
 
     @field_validator("allowed_cidrs")
     @classmethod

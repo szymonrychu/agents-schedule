@@ -5,7 +5,7 @@ description = "Cron schedules mapped to orchestrator presets, fired as agent clu
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "agents-common @ git+https://github.com/szymonrychu/agents-common@v0.5.0",
+    "agents-common @ git+https://github.com/szymonrychu/agents-common@v0.6.0",
     "croniter==6.2.4",
     "tzdata",
     "fastapi",

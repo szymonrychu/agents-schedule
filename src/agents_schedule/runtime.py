@@ -11,10 +11,11 @@ import uvicorn
 from agents_common.db import open_pool
 from agents_common.orchestrator import OrchestratorClient
 from agents_common.runtime import advisory_singleton, run_service
+from agents_common.service_gate import load_tokens
 from psycopg_pool import AsyncConnectionPool
 from starlette.types import ASGIApp
 
-from agents_schedule.api.app import create_app
+from agents_schedule.api.app import create_admin_app, create_app
 from agents_schedule.dispatcher import run_dispatcher
 from agents_schedule.scheduler import run_scheduler
 from agents_schedule.settings import Settings
@@ -44,11 +45,11 @@ class _Server(uvicorn.Server):
         yield
 
 
-def _api_config(settings: Settings, app: ASGIApp) -> uvicorn.Config:
+def _api_config(settings: Settings, app: ASGIApp, port: int | None = None) -> uvicorn.Config:
     return uvicorn.Config(
         app,
         host=settings.http_host,
-        port=settings.http_port,
+        port=settings.http_port if port is None else port,
         log_level=settings.log_level.lower(),
         timeout_graceful_shutdown=int(settings.shutdown_grace_seconds),
         proxy_headers=False,  # the allowlist must see the socket peer, never X-Forwarded-For
@@ -59,14 +60,18 @@ async def _serve(settings: Settings, stop: asyncio.Event) -> None:
     pool = await open_pool(settings.database_url.get_secret_value(), min_size=1, max_size=10)
     client = _client(settings)
     try:
-        app = create_app(settings, pool, client)
-        server = _Server(_api_config(settings, app))
-        serving = asyncio.create_task(server.serve())
+        servers = [_Server(_api_config(settings, create_app(settings, pool, client)))]
+        if settings.admin_tokens_file:
+            tokens = load_tokens(settings.admin_tokens_file)
+            admin = create_admin_app(settings, pool, client, tokens)
+            servers.append(_Server(_api_config(settings, admin, settings.admin_port)))
+        serving = [asyncio.create_task(server.serve()) for server in servers]
         stopping = asyncio.create_task(stop.wait())
-        await asyncio.wait({serving, stopping}, return_when=asyncio.FIRST_COMPLETED)
-        server.should_exit = True
+        await asyncio.wait({*serving, stopping}, return_when=asyncio.FIRST_COMPLETED)
+        for server in servers:
+            server.should_exit = True
         stopping.cancel()
-        await serving
+        await asyncio.gather(*serving)
     finally:
         await client.aclose()
         await pool.close()

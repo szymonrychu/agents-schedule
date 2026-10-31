@@ -259,3 +259,47 @@ async def test_api_ignores_forwarded_headers(db_url: str):
         await serving
         await client.aclose()
         await pool.close()
+
+
+async def test_admin_listener_serves_behind_tokens(db_url: str, tmp_path):
+    """runtime serves the admin app on SCHED_ADMIN_PORT next to the ui port."""
+    import secrets
+
+    ports = []
+    for _ in range(2):
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            ports.append(probe.getsockname()[1])
+    token = secrets.token_urlsafe(24)
+    tokens = tmp_path / "tokens"
+    tokens.write_text(token + "\n")
+    settings = Settings.model_validate(
+        {
+            "database_url": db_url,
+            "orchestrator_url": "http://127.0.0.1:1",
+            "orchestrator_token": secrets.token_urlsafe(24),
+            "http_host": "127.0.0.1",
+            "http_port": ports[0],
+            "admin_port": ports[1],
+            "admin_tokens_file": str(tokens),
+        }
+    )
+    stop = asyncio.Event()
+    serving = asyncio.create_task(runtime._serve(settings, stop))
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{ports[1]}") as http:
+            for _ in range(100):
+                try:
+                    if (await http.get("/healthz")).status_code == 200:
+                        break
+                except httpx.HTTPError:
+                    await asyncio.sleep(0.05)
+            url = "/schedules/api/v1/schedules"
+            assert (await http.get(url)).status_code == 401
+            ok = await http.get(url, headers={"Authorization": f"Bearer {token}"})
+            assert ok.status_code == 200, ok.text
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{ports[0]}") as ui:
+            assert (await ui.get("/schedules/api/v1/schedules")).status_code == 200
+    finally:
+        stop.set()
+        await serving

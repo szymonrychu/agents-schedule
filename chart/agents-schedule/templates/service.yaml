@@ -12,5 +12,11 @@ spec:
       port: {{ .Values.service.port }}
       targetPort: http
       protocol: TCP
+    {{- if .Values.admin.enabled }}
+    - name: admin
+      port: {{ .Values.admin.servicePort }}
+      targetPort: admin
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "agents-schedule.componentLabels" (dict "context" . "component" "api") | nindent 4 }}

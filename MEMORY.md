@@ -2,6 +2,25 @@
 
 Lessons that outlive a session. Newest first.
 
+## 2026-10-28 - release job (semver-image-tags-at-the-end)
+
+- Every green main build ends with `release` (needs every other job, `contents: write`,
+  concurrency group `release`, full history and tags). Why: Harbor retention pruned the deployed
+  sha7 tags within hours (incident 2026-10-28; this repo's `6cfa955` among them); semver tags
+  survive it. `scripts/next_version.py` and `tests/test_next_version.py` are byte-identical
+  copies of agents-orchestrator's: never edit them here, change them there and copy.
+- Versions bump from the hand-made v0.1.0 (on 6cfa955), never restart at 0.1.0: the base is the
+  numerically highest `vX.Y.Z` reachable from HEAD. `!` or a BREAKING CHANGE footer is major
+  (also on 0.x), `feat` minor, else patch, over every commit since the base (not first-parent).
+  Nothing is printed when HEAD is already contained in a release tag, because concurrency
+  serializes release jobs but not their order.
+- Retag with `regctl image copy` (manifest only) first, lightweight git tag (checkout token,
+  never `secrets.GITHUB_TOKEN`) last, so a failed run leaves no tag and a re-run repeats the
+  idempotent copies.
+- Retired: the `push: tags: [v*]` trigger, `chart-publish-tag` and chart-version.sh's tag mode.
+  The release job owns `v*` tags, a GITHUB_TOKEN tag push starts no workflow, and the tag job's
+  Chart.yaml equality check would have refused every release. Main `chart-publish` stays.
+
 ## 2026-10-25 - kind e2e two-worker failure on 814ba20 (e2e-two-worker-failure)
 
 - Root cause: a race in the test, present since 5653502, not a product regression. The

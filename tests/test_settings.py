@@ -103,3 +103,28 @@ def test_default_timezone_must_be_iana(monkeypatch):
     assert "SCHED_DEFAULT_TIMEZONE" in err.value.problems
     monkeypatch.setenv("SCHED_DEFAULT_TIMEZONE", "UTC")
     assert load_settings().default_timezone == "UTC"
+
+
+def test_admin_defaults_off(monkeypatch):
+    set_env(monkeypatch)
+    s = load_settings()
+    assert s.admin_port == 8001
+    assert s.admin_tokens_file is None
+
+
+def test_admin_port_range(monkeypatch):
+    set_env(monkeypatch, SCHED_ADMIN_PORT="70000")
+    with pytest.raises(SettingsError) as exc:
+        load_settings()
+    assert "SCHED_ADMIN_PORT" in exc.value.problems
+
+
+def test_admin_port_must_differ_from_http_port(monkeypatch, tmp_path):
+    set_env(
+        monkeypatch,
+        SCHED_ADMIN_PORT="8000",
+        SCHED_ADMIN_TOKENS_FILE=str(tmp_path / "tokens"),
+    )
+    with pytest.raises(SettingsError) as exc:
+        load_settings()
+    assert "SCHED_ADMIN_PORT" in exc.value.problems

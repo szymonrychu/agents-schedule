@@ -2,6 +2,11 @@
 
 Lessons that outlive a session. Newest first.
 
+## 2026-10-31 - token-gated admin listener (superleader-crud SC1)
+
+- The api process serves a second uvicorn app on `SCHED_ADMIN_PORT` when `SCHED_ADMIN_TOKENS_FILE` is set: the same routers as the ui app (one `_build_app`), wrapped in agents-common v0.6.0 `ServiceTokenGate` instead of `SourceAllowlist`. Off by default, so the ui deploy is unchanged. Why a second port, not a header on the first: the ui port is protected by peer CIDR behind oauth2-proxy and must keep that contract; the orchestrator relay needs bearer auth from other pods.
+- Chart: `admin.enabled` mounts the tokens Secret into the api pod only and adds an `admin` container and Service port; enabling it without `admin.tokensSecret.name` fails the render.
+
 ## 2026-10-28 - release job (semver-image-tags-at-the-end)
 
 - Every green main build ends with `release` (needs every other job, `contents: write`,

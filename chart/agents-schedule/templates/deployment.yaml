@@ -73,6 +73,11 @@ spec:
             - name: http
               containerPort: {{ $cfg.port }}
               protocol: TCP
+            {{- if $.Values.admin.enabled }}
+            - name: admin
+              containerPort: {{ $.Values.admin.port }}
+              protocol: TCP
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
@@ -92,6 +97,11 @@ spec:
             - name: orchestrator-token
               mountPath: {{ include "agents-schedule.tokenDir" $ }}
               readOnly: true
+            {{- if and $.Values.admin.enabled (eq $component "api") }}
+            - name: admin-tokens
+              mountPath: {{ include "agents-schedule.adminTokensDir" $ }}
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
@@ -101,6 +111,14 @@ spec:
             items:
               - key: {{ $tokenKey }}
                 path: token
+        {{- if and $.Values.admin.enabled (eq $component "api") }}
+        - name: admin-tokens
+          secret:
+            secretName: {{ include "agents-schedule.adminTokensSecret" $ }}
+            items:
+              - key: {{ $.Values.admin.tokensSecret.key | default "tokens" }}
+                path: tokens
+        {{- end }}
       {{- with $.Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

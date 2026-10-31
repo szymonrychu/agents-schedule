@@ -119,12 +119,14 @@ def test_prompt_jinja_migration_converts_placeholders(empty_db_url, settings_for
         "done": "Run {{ schedule_name }} at {{ fired_at }}",
         "tight": "{{schedule_name}} {{fired_at}}",
         "plain": "no placeholders",
+        "literal": "a {{x}} b {% c %} d {# e #} {schedule_name}",
     }
     expected = {
         "old": "Run {{ schedule_name }} at {{ fired_at }}; keep {other} {} {schedule_name",
         "done": "Run {{ schedule_name }} at {{ fired_at }}",
-        "tight": "{{schedule_name}} {{fired_at}}",
+        "tight": "{{ '{{' }}schedule_name}} {{ '{{' }}fired_at}}",
         "plain": "no placeholders",
+        "literal": ("a {{ '{{' }}x}} b {{ '{%' }} c %} d {{ '{#' }} e #} {{ schedule_name }}"),
     }
     with psycopg.connect(empty_db_url, autocommit=True) as conn:
         for name, prompt in cases.items():

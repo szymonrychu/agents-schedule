@@ -108,6 +108,10 @@ async def _view_of(conn: psycopg.AsyncConnection, sched: schedules.Schedule) -> 
 async def _write(request: Request, data: ScheduleIn, schedule_id: uuid.UUID | None) -> ScheduleView:
     settings: Settings = request.app.state.settings
     expr, tz_name, _ = _validate_cron(data.cron, data.timezone, settings)
+    try:
+        templating.validate(data.prompt)
+    except templating.TemplateError as exc:
+        raise ApiError(422, "invalid_prompt", _prompt_error(vars(exc))) from exc
     await _check_preset(request.app.state.client, data.preset_id)
     fields = {
         "name": data.name,

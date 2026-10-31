@@ -269,6 +269,23 @@ async def test_preview_prompt_errors(http):
     assert r.json()["error"]["code"] == "invalid_prompt"
 
 
+async def test_invalid_prompt_refused_on_save(http, preset):
+    for bad in ("{% if %}", "{{ a"):
+        r = await http.post(f"{BASE}/schedules", json=body(preset, prompt=bad))
+        assert r.status_code == 422
+        assert r.json()["error"]["code"] == "invalid_prompt"
+    created = (await http.post(f"{BASE}/schedules", json=body(preset))).json()
+    r = await http.put(
+        f"{BASE}/schedules/{created['id']}", json=body(preset, prompt="ok\n{% for %}")
+    )
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "invalid_prompt"
+    assert "line 2" in r.json()["error"]["message"]
+    # an undefined variable is only known at fire time, so it saves
+    r = await http.put(f"{BASE}/schedules/{created['id']}", json=body(preset, prompt="{{ later }}"))
+    assert r.status_code == 200
+
+
 async def test_conflict_and_not_found(http, preset):
     first = (await http.post(f"{BASE}/schedules", json=body(preset))).json()
     r = await http.post(f"{BASE}/schedules", json=body(preset))

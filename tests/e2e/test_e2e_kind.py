@@ -149,7 +149,7 @@ def make_schedule(api: Api) -> Iterator[Callable[..., dict[str, Any]]]:
             "cron": NEVER,
             "timezone": "UTC",
             "preset_id": preset_id,
-            "prompt": "e2e prompt for {schedule_name} at {fired_at}",
+            "prompt": "e2e prompt for {{ schedule_name }} at {{ fired_at }}",
             **overrides,
         }
         r = api.post(f"{BASE}/schedules", json=body)
@@ -373,7 +373,7 @@ def test_run_now_handled(api: Api, fake: Fake, make_schedule):
     prompts = fake.posts(running["session_id"])
     assert len(prompts) == 1
     assert schedule["name"] in prompts[0]["body"]["text"]
-    assert "{schedule_name}" not in prompts[0]["body"]["text"]
+    assert "{{" not in prompts[0]["body"]["text"]
 
     fake.complete(running["message_id"])
     done = wait_run(api, run["id"], "handled")

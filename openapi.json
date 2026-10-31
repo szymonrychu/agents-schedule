@@ -38,6 +38,40 @@
             "title": "Cron",
             "type": "string"
           },
+          "preset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset Id"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "maxLength": 16384,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          },
+          "schedule_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schedule Name"
+          },
           "timezone": {
             "anyOf": [
               {
@@ -64,6 +98,25 @@
               "type": "string"
             },
             "title": "Next Fires",
+            "type": "array"
+          },
+          "rendered": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rendered"
+          },
+          "variables": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Variables",
             "type": "array"
           }
         },
@@ -454,7 +507,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request, invalid_cron, invalid_timezone, unknown_preset)"
+            "description": "invalid request (invalid_request, invalid_cron, invalid_timezone, unknown_preset, invalid_prompt)"
           }
         },
         "summary": "List Runs"
@@ -591,7 +644,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request, invalid_cron, invalid_timezone, unknown_preset)"
+            "description": "invalid request (invalid_request, invalid_cron, invalid_timezone, unknown_preset, invalid_prompt)"
           },
           "503": {
             "content": {
@@ -649,7 +702,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request, invalid_cron, invalid_timezone, unknown_preset)"
+            "description": "invalid request (invalid_request, invalid_cron, invalid_timezone, unknown_preset, invalid_prompt)"
           }
         },
         "summary": "Preview"
@@ -815,7 +868,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request, invalid_cron, invalid_timezone, unknown_preset)"
+            "description": "invalid request (invalid_request, invalid_cron, invalid_timezone, unknown_preset, invalid_prompt)"
           },
           "503": {
             "content": {
@@ -949,7 +1002,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request, invalid_cron, invalid_timezone, unknown_preset)"
+            "description": "invalid request (invalid_request, invalid_cron, invalid_timezone, unknown_preset, invalid_prompt)"
           }
         },
         "summary": "Schedule Runs"

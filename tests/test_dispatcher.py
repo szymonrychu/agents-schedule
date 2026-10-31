@@ -11,6 +11,7 @@ import pytest
 from agents_common.db import notify, open_pool
 from agents_common.fake_orchestrator import FakeOrchestrator
 from agents_common.orchestrator import OrchestratorClient
+from agents_common.templating import TemplateError
 
 from agents_schedule import dispatcher
 from agents_schedule.db import runs, schedules
@@ -66,7 +67,7 @@ async def add_schedule(
     conn,
     preset_id: uuid.UUID,
     name: str = "Nightly Build",
-    prompt: str = "Run {schedule_name} at {fired_at}; keep {braces} and {{this}}",
+    prompt: str = "Run {{ schedule_name }} at {{ fired_at }} on {{ preset }}; keep {braces}",
     timezone: str = "Europe/Warsaw",
     enabled: bool = True,
 ) -> schedules.Schedule:
@@ -115,13 +116,13 @@ async def dispatch_previous(aconn, pool, client, settings, sched) -> runs.Run:
 
 def test_render_prompt():
     fired = datetime(2026, 3, 1, 3, 0, tzinfo=ZoneInfo("Europe/Warsaw"))
-    template = "{schedule_name} fired at {fired_at}; {other} {} {{x}} {schedule_name"
-    assert render_prompt(template, "nightly", fired) == (
-        "nightly fired at 2026-03-01T03:00:00+01:00; {other} {} {{x}} {schedule_name"
+    now = datetime(2026, 3, 1, 2, 0, tzinfo=ZoneInfo("UTC"))
+    template = "{{ schedule_name }} @ {{ fired_at }} [{{ preset }}] {{ now }} {other} {}"
+    assert render_prompt(template, "nightly", fired, "p-1", now) == (
+        "nightly @ 2026-03-01T03:00:00+01:00 [p-1] 2026-03-01T02:00:00+00:00 {other} {}"
     )
-    # a replaced value is never expanded again
-    assert render_prompt("{schedule_name}", "{fired_at}", fired) == "{fired_at}"
-    assert render_prompt("no placeholders %s {0}", "n", fired) == "no placeholders %s {0}"
+    with pytest.raises(TemplateError):
+        render_prompt("{{ nope }}", "n", fired, "p", now)
 
 
 def test_slug_is_dns_label():
@@ -174,10 +175,23 @@ async def test_dispatch_happy_path(aconn, pool, client, fake, settings):
     assert message["session_id"] == session["id"]
     fired = FIRE.astimezone(ZoneInfo("Europe/Warsaw")).isoformat()
     assert message["text"] == (
-        f"Run Nightly Build at {fired}; keep {{braces}} and {{{{this}}}}\n\n{marker_of(run.id)}"
+        f"Run Nightly Build at {fired} on {preset.id}; keep {{braces}}\n\n{marker_of(run.id)}"
     )
     assert got.reuse is None
     assert got.attempts == 0
+
+
+async def test_unrenderable_prompt_fails_run(aconn, pool, client, fake, settings):
+    preset = fake.add_preset("default")
+    sched = await add_schedule(aconn, preset.id, prompt="hi {{ nope }}")
+    run = await add_run(aconn, sched.id)
+
+    assert await dispatcher.dispatch_once(pool, client, settings) is True
+
+    got = await runs.get(aconn, run.id)
+    assert got.status == "failed"
+    assert got.reason is not None and got.reason.startswith("prompt_invalid")
+    assert (creates(fake), posts(fake)) == (0, 0)
 
 
 async def test_resume_never_repeats(aconn, pool, client, fake, settings):

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 import psycopg
+from agents_common import templating
 from agents_common.db import notify
 from agents_common.orchestrator import (
     NotFound,
@@ -27,6 +29,7 @@ from agents_schedule.api.schemas import (
     ScheduleView,
 )
 from agents_schedule.db import runs, schedules
+from agents_schedule.prompt import prompt_context
 from agents_schedule.settings import Settings
 
 log = logging.getLogger(__name__)
@@ -105,6 +108,10 @@ async def _view_of(conn: psycopg.AsyncConnection, sched: schedules.Schedule) -> 
 async def _write(request: Request, data: ScheduleIn, schedule_id: uuid.UUID | None) -> ScheduleView:
     settings: Settings = request.app.state.settings
     expr, tz_name, _ = _validate_cron(data.cron, data.timezone, settings)
+    try:
+        templating.validate(data.prompt)
+    except templating.TemplateError as exc:
+        raise ApiError(422, "invalid_prompt", _prompt_error(vars(exc))) from exc
     await _check_preset(request.app.state.client, data.preset_id)
     fields = {
         "name": data.name,
@@ -139,10 +146,25 @@ async def create_schedule(request: Request, data: ScheduleIn) -> ScheduleView:
     return await _write(request, data, None)
 
 
+def _prompt_error(error: dict) -> str:
+    line = error["line"]
+    return f"line {line}: {error['message']}" if line else error["message"]
+
+
 @router.post("/schedules/preview", response_model=PreviewView)
 async def preview(request: Request, data: PreviewIn) -> PreviewView:
     expr, _, tz = _validate_cron(data.cron, data.timezone, request.app.state.settings)
-    return PreviewView(next_fires=cron.next_fires(expr, tz, datetime.now(UTC), 3))
+    now = datetime.now(UTC)
+    fires = cron.next_fires(expr, tz, now, 3)
+    if data.prompt is None:
+        return PreviewView(next_fires=fires)
+    context = prompt_context(
+        data.schedule_name or "schedule", fires[0], data.preset_id or "preset", now
+    )
+    result = await asyncio.to_thread(templating.preview, data.prompt, context)
+    if result["error"] is not None:
+        raise ApiError(422, "invalid_prompt", _prompt_error(result["error"]))
+    return PreviewView(next_fires=fires, rendered=result["rendered"], variables=result["variables"])
 
 
 @router.get("/schedules/{schedule_id}", response_model=ScheduleView)

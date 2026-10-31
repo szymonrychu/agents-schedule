@@ -39,6 +39,7 @@ from agents_common.orchestrator import (
     OrchestratorError,
     OrchestratorUnavailable,
 )
+from agents_common.templating import TemplateError
 from psycopg_pool import AsyncConnectionPool
 
 from agents_schedule.db import runs, schedules
@@ -218,7 +219,19 @@ async def _send(
     binding = common_runs.PresetBinding(str(schedule.preset_id), schedule.prompt)
     assert binding.prompt_template is not None
     fired_at = run.fire_time.astimezone(ZoneInfo(schedule.timezone))
-    text = render_prompt(binding.prompt_template, schedule.name, fired_at)
+    try:
+        text = await asyncio.to_thread(
+            render_prompt,
+            binding.prompt_template,
+            schedule.name,
+            fired_at,
+            binding.preset_id,
+            datetime.now(UTC),
+        )
+    except TemplateError as exc:
+        await store.finish(run.id, "failed", f"prompt_invalid: {exc.message}")
+        log.warning("run %s: prompt does not render: %s", run.id, exc.message)
+        return
     marker = common_runs.marker(RUN_KIND, str(run.id))
     ref = common_runs.RunRef(
         id=str(run.id),

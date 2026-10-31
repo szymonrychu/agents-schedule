@@ -119,7 +119,7 @@ Statuses: `new` (waiting for a slot under `SCHED_MAX_IN_PROGRESS` and `SCHED_MAX
 
 Reuse: when the preset sets `reuse_running_agent` and the schedule's previous run has a session that is still running, the run posts its prompt to that session instead of creating one, and `reuse` is `delivered`. When the preset opts in but that session is gone, not running or refuses the prompt, `reuse` is `fallback` and the run creates a new session as usual. `reuse` is null when the preset does not opt in or no earlier run has a session.
 
-Prompt placeholders: `{schedule_name}` and `{fired_at}` (ISO 8601, in the schedule's timezone) in the schedule's prompt are replaced when the run is sent; every other brace is left as written.
+Prompts are sandboxed Jinja templates rendered when the run is sent. Variables: `{{ schedule_name }}`, `{{ fired_at }}` (ISO 8601, in the schedule's timezone), `{{ preset }}` (the preset id) and `{{ now }}` (ISO 8601, UTC). An undefined variable or a syntax error fails the run with reason `prompt_invalid`; `POST /schedules/preview` with a `prompt` returns `rendered` and `variables`, or 422 `invalid_prompt` with the line.
 
 ### Versioning
 

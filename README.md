@@ -100,7 +100,7 @@ One run. Response `200`: the run. Errors: `403`, `404 not_found`.
 
 A run is `{id, schedule_id, trigger, fire_time, status, reason, session_id, session_slug, message_id, reuse, created_at, updated_at, started_at, finished_at}`. `trigger` is `scheduled` or `manual`; `fire_time` is the cron time (scheduled) or the request time (manual).
 
-Statuses: `new` (waiting for a slot under `SCHED_MAX_IN_PROGRESS` and `SCHED_MAX_PER_SCHEDULE`), `in-progress` (session created or prompt delivered, turn running), `handled` (the turn completed), `failed` (see reason) and `ignored` (never sent). `reason` is null unless the run is `failed` or `ignored`:
+Statuses: `new` (waiting for a slot under `SCHED_MAX_IN_PROGRESS` and `SCHED_MAX_PER_SCHEDULE`), `in-progress` (session created or prompt delivered, turn running), `handled` (the turn completed, or the slash command the prompt consists of completed), `failed` (see reason) and `ignored` (never sent). `reason` is null unless the run is `failed` or `ignored`:
 
 | Status | Reason | Meaning |
 |---|---|---|
@@ -113,6 +113,8 @@ Statuses: `new` (waiting for a slot under `SCHED_MAX_IN_PROGRESS` and `SCHED_MAX
 | `failed` | `message_failed` | the orchestrator marked the prompt message failed |
 | `failed` | `message_cancelled` | the prompt message was cancelled |
 | `failed` | `turn_failed` | the agent's turn failed |
+| `failed` | `command_<error>` | the prompt is a slash command and it failed; `<error>` is the command's error code (`command_failed` when it carries none), for example `command_unknown_command` |
+| `failed` | `command_cancelled` | the prompt is a slash command and it was cancelled |
 | `failed` | `timeout` | the run was still going after `SCHED_RUN_TIMEOUT_SECONDS` |
 
 `session_slug` is the slug the run's session is created with (`<schedule name slug>-<8 hex of the run id>`), fixed at first send. `session_id` and `message_id` are set as the run progresses.

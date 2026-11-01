@@ -13,7 +13,7 @@ from agents_common.fake_orchestrator import FakeOrchestrator
 from agents_common.orchestrator import OrchestratorClient
 from agents_common.templating import TemplateError
 
-from agents_schedule import dispatcher
+from agents_schedule import dispatcher, scheduler
 from agents_schedule.db import runs, schedules
 from agents_schedule.prompt import render_prompt, session_slug
 from agents_schedule.settings import Settings
@@ -518,3 +518,120 @@ async def test_unexpected_error_isolated_per_run(
     assert await dispatcher.resume_pending(pool, client, settings) == 1
     assert (await runs.get(aconn, bad.id)).message_id is not None
     assert (creates(fake), posts(fake)) == (3, 3)
+
+
+def reset_in(hours: int = 2) -> datetime:
+    """A window reset far enough ahead that `retry_at` is the reset plus its 60 s margin."""
+    return datetime.now(UTC).replace(microsecond=0) + timedelta(hours=hours)
+
+
+async def test_usage_quota_refusal_holds_run(aconn, pool, client, fake, settings):
+    preset = fake.add_preset("default")
+    sched = await add_schedule(aconn, preset.id)
+    run = await add_run(aconn, sched.id)
+    resets = reset_in()
+    fake.refuse_usage(resets)
+
+    assert await dispatcher.dispatch_once(pool, client, settings)
+
+    got = await runs.get(aconn, run.id)
+    assert (got.status, got.reason, got.attempts) == ("new", "usage_quota", 0)
+    assert got.not_before == resets + timedelta(seconds=60)
+    assert (got.session_id, got.message_id, got.reuse, got.started_at) == (None, None, None, None)
+    assert got.finished_at is None
+    assert not fake.sessions
+
+    # held: not claimed before not_before
+    assert not await dispatcher.dispatch_once(pool, client, settings)
+    assert (await runs.get(aconn, run.id)).status == "new"
+    # claimed once not_before has passed, and sent
+    past = datetime.now(UTC) - timedelta(seconds=1)
+    await aconn.execute("UPDATE runs SET not_before = %s WHERE id = %s", (past, run.id))
+    assert await dispatcher.dispatch_once(pool, client, settings)
+    got = await runs.get(aconn, run.id)
+    assert (got.status, got.message_id is not None) == ("in-progress", True)
+    assert len(fake.sessions) == 1
+
+
+async def test_held_run_blocks_newer_run_of_its_schedule_only(aconn, pool, client, fake, db_url):
+    settings = make_settings(db_url, max_per_schedule=10)
+    preset = fake.add_preset("default")
+    held_sched = await add_schedule(aconn, preset.id, name="held")
+    other_sched = await add_schedule(aconn, preset.id, name="other")
+    held = await add_run(aconn, held_sched.id, FIRE)
+    newer = await add_run(aconn, held_sched.id, FIRE + timedelta(minutes=5))
+    other = await add_run(aconn, other_sched.id, FIRE + timedelta(minutes=10))
+    fake.refuse_usage(reset_in())
+
+    assert await dispatcher.dispatch_once(pool, client, settings)  # the held run is refused
+    assert (await runs.get(aconn, held.id)).reason == "usage_quota"
+    # FIFO: the newer run of the same schedule waits behind the held one, another schedule goes
+    assert await dispatcher.dispatch_once(pool, client, settings)
+    assert not await dispatcher.dispatch_once(pool, client, settings)
+    assert (await runs.get(aconn, other.id)).status == "in-progress"
+    assert (await runs.get(aconn, newer.id)).status == "new"
+    assert (await runs.get(aconn, held.id)).status == "new"
+    assert len(fake.sessions) == 1
+
+
+async def test_fire_during_hold_is_ignored_previous_running(aconn, pool, client, fake, settings):
+    preset = fake.add_preset("default")
+    sched = await add_schedule(aconn, preset.id)
+    held = await add_run(aconn, sched.id, FIRE)
+    await aconn.execute("UPDATE schedules SET armed_at = %s WHERE id = %s", (FIRE, sched.id))
+    fake.refuse_usage(reset_in())
+    assert await dispatcher.dispatch_once(pool, client, settings)
+    assert (await runs.get(aconn, held.id)).status == "new"
+
+    tick = await scheduler.tick(pool, settings, FIRE + timedelta(days=1))
+
+    assert (tick.created, tick.ignored) == (0, 1)
+    got = await runs.list_for_schedule(aconn, sched.id, 10)
+    fired = next(r for r in got if r.id != held.id)
+    assert (fired.status, fired.reason) == ("ignored", "previous_running")
+    assert (await runs.get(aconn, held.id)).status == "new"
+
+
+async def test_repeated_refusal_holds_again_never_fails(aconn, pool, client, fake, db_url):
+    settings = make_settings(db_url, dispatch_max_attempts=1)
+    preset = fake.add_preset("default")
+    sched = await add_schedule(aconn, preset.id)
+    run = await add_run(aconn, sched.id)
+    fake.refuse_usage(reset_in(), times=3)
+
+    for _ in range(3):
+        assert await dispatcher.dispatch_once(pool, client, settings)
+        got = await runs.get(aconn, run.id)
+        assert (got.status, got.reason, got.attempts) == ("new", "usage_quota", 0)
+        assert got.not_before is not None
+        await aconn.execute("UPDATE runs SET not_before = now() WHERE id = %s", (run.id,))
+    assert not fake.sessions
+
+    assert await dispatcher.dispatch_once(pool, client, settings)  # the refusals are used up
+    assert (await runs.get(aconn, run.id)).status == "in-progress"
+    assert len(fake.sessions) == 1
+
+
+async def test_refusal_on_resume_resets_attempts_and_holds(aconn, pool, client, fake, settings):
+    preset = fake.add_preset("default")
+    sched = await add_schedule(aconn, preset.id)
+    run = await add_run(aconn, sched.id)
+    fake.fail_next("create_session", 503)
+    assert await dispatcher.dispatch_once(pool, client, settings)
+    assert (await runs.get(aconn, run.id)).attempts == 1
+
+    fake.refuse_usage(reset_in())
+    later = datetime.now(UTC) + LATER
+    assert await dispatcher.resume_pending(pool, client, settings, later) == 1
+
+    got = await runs.get(aconn, run.id)
+    assert (got.status, got.reason, got.attempts) == ("new", "usage_quota", 0)
+    assert got.not_before is not None and got.started_at is None
+
+
+async def test_hold_is_status_guarded(aconn, pool):
+    sched = await add_schedule(aconn, uuid.uuid4())
+    run = await add_run(aconn, sched.id)  # still `new`, not in-progress
+    assert not await dispatcher.RunsStore(pool).hold(run.id, FIRE + LATER)
+    got = await runs.get(aconn, run.id)
+    assert (got.status, got.reason, got.not_before) == ("new", None, None)

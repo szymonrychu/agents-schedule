@@ -152,6 +152,28 @@ async def test_claim_next_per_schedule_order(aconn):
     assert (await runs.claim_next(aconn, 9, 1, NOW)).id == a2.id
 
 
+def test_pick_filters_on_not_before():
+    assert "not_before" in runs._PICK
+
+
+async def test_claim_next_waits_for_not_before(aconn):
+    a, b = await add_schedule(aconn, "a"), await add_schedule(aconn, "b")
+    held = await runs.insert_scheduled(aconn, a, at(1), "new")
+    behind = await runs.insert_scheduled(aconn, a, at(2), "new")
+    other = await runs.insert_scheduled(aconn, b, at(3), "new")
+    until = NOW + timedelta(hours=1)
+    assert await runs.transition(aconn, held.id, "new", "new", not_before=until)
+
+    # before not_before the held run is skipped, and so is the newer run of its schedule (FIFO)
+    assert (await runs.claim_next(aconn, 9, 9, NOW)).id == other.id
+    assert await runs.claim_next(aconn, 9, 9, NOW) is None
+    assert await runs.claim_next(aconn, 9, 9, until - timedelta(seconds=1)) is None
+    # at not_before it is claimed first, then the newer run
+    got = await runs.claim_next(aconn, 9, 9, until)
+    assert (got.id, got.status, got.not_before) == (held.id, "in-progress", until)
+    assert (await runs.claim_next(aconn, 9, 9, until)).id == behind.id
+
+
 async def test_claim_skip_locked(aconn, db_url):
     sids = [await add_schedule(aconn, f"s{i}") for i in range(6)]
     created = {(await runs.insert_scheduled(aconn, s, at(i), "new")).id for i, s in enumerate(sids)}

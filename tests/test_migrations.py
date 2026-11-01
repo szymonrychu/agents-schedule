@@ -29,7 +29,11 @@ def add_run(conn, schedule_id, fire="2026-01-01T00:00:00Z", **cols) -> None:
 
 def test_migrate_idempotent(empty_db_url, settings_for):
     settings = settings_for(empty_db_url)
-    assert migrate(settings) == ["0001_schedules.sql", "0002_prompt_jinja.sql"]
+    assert migrate(settings) == [
+        "0001_schedules.sql",
+        "0002_prompt_jinja.sql",
+        "0003_run_not_before.sql",
+    ]
     assert migrate(settings) == []
     with psycopg.connect(empty_db_url) as conn:
         tables = {
@@ -48,6 +52,7 @@ def test_concurrent_migrate_applies_once(empty_db_url, settings_for):
     assert sorted(name for applied in results for name in applied) == [
         "0001_schedules.sql",
         "0002_prompt_jinja.sql",
+        "0003_run_not_before.sql",
     ]
 
 
@@ -139,3 +144,15 @@ def test_prompt_jinja_migration_converts_placeholders(empty_db_url, settings_for
             conn.execute(sql_text)
             got = dict(conn.execute("SELECT name, prompt FROM schedules").fetchall())
             assert got == expected
+
+
+def test_runs_not_before_column(conn):
+    sid = add_schedule(conn)
+    add_run(conn, sid)
+    assert conn.execute("SELECT not_before FROM runs").fetchone() == (None,)
+    conn.execute("UPDATE runs SET not_before = now()")
+    row = conn.execute(
+        "SELECT data_type, is_nullable FROM information_schema.columns "
+        "WHERE table_name = 'runs' AND column_name = 'not_before'"
+    ).fetchone()
+    assert row == ("timestamp with time zone", "YES")

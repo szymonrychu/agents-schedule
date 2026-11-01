@@ -32,14 +32,16 @@ async def fire_lock(conn: psycopg.AsyncConnection, schedule_id: uuid.UUID) -> No
 
 _COLUMNS = (
     "id, schedule_id, trigger, fire_time, status, reason, attempts, session_slug, session_id, "
-    "message_id, reuse, created_at, updated_at, started_at, finished_at"
+    "message_id, reuse, created_at, updated_at, started_at, finished_at, not_before"
 )
 _ORDER = "ORDER BY fire_time DESC, created_at DESC"
 
-# The oldest `new` run that fits both caps and has no older `new` run in its schedule.
+# The oldest `new` run that fits both caps, is past its `not_before` hold and has no older `new`
+# run in its schedule (a held run therefore also holds back the newer runs of its schedule).
 _PICK = f"""
 SELECT {_COLUMNS} FROM runs r
 WHERE r.status = 'new'
+  AND (r.not_before IS NULL OR r.not_before <= %(now)s)
   AND (SELECT count(*) FROM runs WHERE status = 'in-progress') < %(cap)s
   AND (SELECT count(*) FROM runs p
        WHERE p.schedule_id = r.schedule_id AND p.status = 'in-progress') < %(per)s
@@ -70,6 +72,7 @@ class Run:
     updated_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    not_before: datetime | None
 
 
 async def _fetch(conn: psycopg.AsyncConnection, query: str, params: Any = None) -> list[Run]:
@@ -170,9 +173,10 @@ async def claim_next(
     """Move the oldest eligible `new` run to in-progress; None when nothing is claimable.
 
     A schedule's runs are claimed strictly in `(fire_time, created_at)` order: a run is never
-    eligible while an older run of its schedule is still `new`.
+    eligible while an older run of its schedule is still `new`. A run held by `not_before` (usage
+    quota) is not claimable before it, and keeps the newer runs of its schedule waiting.
     """
-    params = {"cap": max_in_progress, "per": max_per_schedule}
+    params = {"cap": max_in_progress, "per": max_per_schedule, "now": now}
     async with conn.transaction():
         await conn.execute("SELECT pg_advisory_xact_lock(%s)", (_CLAIM_LOCK,))
         row = await claim(conn, _PICK, params)

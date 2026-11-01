@@ -106,10 +106,11 @@ One run. Response `200`: the run. Errors: `403`, `404 not_found`.
 
 A run is `{id, schedule_id, trigger, fire_time, status, reason, session_id, session_slug, message_id, reuse, created_at, updated_at, started_at, finished_at}`. `trigger` is `scheduled` or `manual`; `fire_time` is the cron time (scheduled) or the request time (manual).
 
-Statuses: `new` (waiting for a slot under `SCHED_MAX_IN_PROGRESS` and `SCHED_MAX_PER_SCHEDULE`), `in-progress` (session created or prompt delivered, turn running), `handled` (the turn completed), `failed` (see reason) and `ignored` (never sent). `reason` is null unless the run is `failed` or `ignored`:
+Statuses: `new` (waiting for a slot under `SCHED_MAX_IN_PROGRESS` and `SCHED_MAX_PER_SCHEDULE`, or held for the Claude usage quota, see below), `in-progress` (session created or prompt delivered, turn running), `handled` (the turn completed), `failed` (see reason) and `ignored` (never sent). `reason` is null unless the run is `failed`, `ignored` or held (`new` with reason `usage_quota`):
 
 | Status | Reason | Meaning |
 |---|---|---|
+| `new` | `usage_quota` | the orchestrator refused to create the session because the Claude usage gate is closed (409 `usage_quota`); the run waits, see below |
 | `ignored` | `previous_running` | the schedule already had the maximum runs in flight when this one fired |
 | `ignored` | `schedule_disabled` | a scheduled run was claimed while its schedule was disabled (a manual run on a disabled schedule is sent) |
 | `failed` | `preset_not_found` | the orchestrator has no such preset any more |
@@ -120,6 +121,8 @@ Statuses: `new` (waiting for a slot under `SCHED_MAX_IN_PROGRESS` and `SCHED_MAX
 | `failed` | `message_cancelled` | the prompt message was cancelled |
 | `failed` | `turn_failed` | the agent's turn failed |
 | `failed` | `timeout` | the run was still going after `SCHED_RUN_TIMEOUT_SECONDS` |
+
+Usage quota hold: when the orchestrator answers the session create with 409 `usage_quota`, the run goes back from `in-progress` to `new` with reason `usage_quota`, attempts 0 and no session, and is not claimed before `not_before` (a column of `runs`, not part of the api views): the refusal's window reset plus 60 s, at least a minute from now, 5 minutes when the refusal names no reset. The dispatcher picks it up on its next poll after that. A held run keeps the newer runs of its schedule waiting behind it (oldest first), so a fire meanwhile is recorded `ignored` with reason `previous_running` when the schedule is at `SCHED_MAX_PER_SCHEDULE`. A refusal is not a transient error: it never counts towards `SCHED_DISPATCH_MAX_ATTEMPTS` and never fails the run; every further refusal holds it again until the gate opens.
 
 `session_slug` is the slug the run's session is created with (`<schedule name slug>-<8 hex of the run id>`), fixed at first send. `session_id` and `message_id` are set as the run progresses.
 

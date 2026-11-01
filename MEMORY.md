@@ -2,6 +2,12 @@
 
 Lessons that outlive a session. Newest first.
 
+## 2026-11-01 - usage quota hold (claude-usage-monitor E3)
+
+- A 409 `usage_quota` on session create (agents-common v0.7.0 `UsageQuotaRefused`) puts the run back to `new` through `RunsStore.hold`: guarded `in-progress -> new` with `not_before = exc.retry_at(now)`, reason `usage_quota`, `attempts=0`, and `started_at`, `session_id`, `reuse` cleared (the run is unsent again; `session_slug` stays, it is fixed at first send). Why `new` and not a new status: the CHECK on `runs.status` and the api contract stay unchanged, and `in_flight` already counts `new`, so a fire during the hold is `ignored previous_running` with no extra code.
+- `_PICK` skips `not_before > now` but its NOT EXISTS subquery deliberately does not look at `not_before`: a held run still blocks the newer `new` runs of its schedule (FIFO per schedule), other schedules go on. The catch sits before `OrchestratorError` and never touches `attempts`, so a refusal can neither fail the run `orchestrator_refused` nor reach `orchestrator_unavailable`.
+- No timer: the dispatcher already wakes every `SCHED_POLL_SECONDS`, so a run is retried within one poll after `not_before`. `not_before` is not in the api views or `openapi.json`.
+
 ## 2026-10-31 - token-gated admin listener (superleader-crud SC1)
 
 - The api process serves a second uvicorn app on `SCHED_ADMIN_PORT` when `SCHED_ADMIN_TOKENS_FILE` is set: the same routers as the ui app (one `_build_app`), wrapped in agents-common v0.6.0 `ServiceTokenGate` instead of `SourceAllowlist`. Off by default, so the ui deploy is unchanged. Why a second port, not a header on the first: the ui port is protected by peer CIDR behind oauth2-proxy and must keep that contract; the orchestrator relay needs bearer auth from other pods.

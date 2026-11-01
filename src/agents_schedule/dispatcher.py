@@ -17,7 +17,12 @@ Each step is skipped when its id is already recorded, so a restart at any point 
 second session and posts no second prompt. Errors: a missing preset fails `preset_not_found`;
 a refusal fails `orchestrator_refused: <code>`; a transient error keeps the run in progress with
 `attempts + 1`, resumed after a backoff, and fails `orchestrator_unavailable` at
-`SCHED_DISPATCH_MAX_ATTEMPTS`.
+`SCHED_DISPATCH_MAX_ATTEMPTS`. A usage quota refusal (409 `usage_quota`: the orchestrator's
+Claude usage gate) is neither: `RunsStore.hold` moves the run back to `new` with `not_before`
+at the refusal's `retry_at` (the window reset plus a margin), reason `usage_quota`, attempts 0
+and no session. `runs.claim_next` skips it until then, and its schedule's newer runs wait behind
+it (FIFO), so a fire meanwhile is recorded `ignored previous_running`. It is held again on
+every further refusal and never fails for it.
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ from agents_common.orchestrator import (
     OrchestratorClient,
     OrchestratorError,
     OrchestratorUnavailable,
+    UsageQuotaRefused,
 )
 from agents_common.templating import TemplateError
 from psycopg_pool import AsyncConnectionPool
@@ -101,6 +107,22 @@ class RunsStore:
 
     async def ignore(self, run_id: uuid.UUID, reason: str) -> bool:
         return await self._move(run_id, "ignored", reason=reason)
+
+    async def hold(self, run_id: uuid.UUID, until: datetime) -> bool:
+        """Put an in-progress run back to `new`, not claimable before `until`, as if unsent."""
+        async with self._pool.connection() as conn:
+            return await runs.transition(
+                conn,
+                run_id,
+                "in-progress",
+                "new",
+                not_before=until,
+                reason="usage_quota",
+                attempts=0,
+                started_at=None,
+                session_id=None,
+                reuse=None,
+            )
 
     async def record_attempt(self, run_id: uuid.UUID, attempts: int, max_attempts: int) -> bool:
         """Count a transient failure; fail the run `orchestrator_unavailable` at the cap."""
@@ -264,6 +286,10 @@ async def _send(
         log.warning("run %s: preset %s not found", run.id, binding.preset_id)
     except NotFound as exc:  # runs.dispatch already failed the run with its reason
         log.warning("run %s: failed: %s", run.id, exc)
+    except UsageQuotaRefused as exc:
+        until = exc.retry_at(datetime.now(UTC))
+        await store.hold(run.id, until)
+        log.info("run %s: usage quota refused (%s), held until %s", run.id, exc.metric, until)
     except OrchestratorUnavailable as exc:
         attempts = run.attempts + 1
         await store.record_attempt(run.id, attempts, settings.dispatch_max_attempts)

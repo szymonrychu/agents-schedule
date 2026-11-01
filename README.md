@@ -8,6 +8,8 @@ A Python microservice with its own Postgres database that maps 5-field cron sche
 
 ## Development
 
+Run `pre-commit install` once per clone to enable the gitleaks hook.
+
 Run from this directory with mise:
 
 - `mise run test` - unit tests

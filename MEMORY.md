@@ -2,6 +2,12 @@
 
 Lessons that outlive a session. Newest first.
 
+## 2026-11-08 - If-Match on schedule PUT (preset-change-proposals B1)
+
+- `PUT /schedules/{id}` takes an optional `If-Match: "<updated_at>"` so the orchestrator can apply schedule proposals without lost updates (plan Q15 A). The tag is the view's `updated_at` (RFC 3339, double quotes), parsed with `datetime.fromisoformat` and compared as a datetime, so `Z` and `+00:00` spellings of the same instant match. Unquoted, naive, weak (`W/`) and `*` values are 400 `bad_request`; `*` is refused because no caller needs it.
+- `schedules.update(..., expected_updated_at=)` runs `SELECT updated_at ... FOR UPDATE` in the same transaction as the UPDATE (`update` opens its own transaction, a savepoint inside the route's), so a second writer with the same tag blocks on the lock, then reads the new `updated_at` and gets 412 `precondition_failed`; a plain SELECT would let both pass. A mismatch writes nothing and sends no NOTIFY. Without the header the last write wins, as before.
+- The concurrency test holds the row lock from a third connection and waits on `pg_stat_activity` until both PUTs queue on it, so the race is deterministic.
+
 ## 2026-11-01 - usage quota hold (claude-usage-monitor E3)
 
 - A 409 `usage_quota` on session create (agents-common v0.7.0 `UsageQuotaRefused`) puts the run back to `new` through `RunsStore.hold`: guarded `in-progress -> new` with `not_before = exc.retry_at(now)`, reason `usage_quota`, `attempts=0`, and `started_at`, `session_id`, `reuse` cleared (the run is unsent again; `session_slug` stays, it is fixed at first send). Why `new` and not a new status: the CHECK on `runs.status` and the api contract stay unchanged, and `in_flight` already counts `new`, so a fire during the hold is `ignored previous_running` with no extra code.

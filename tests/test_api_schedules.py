@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timedelta
@@ -352,3 +353,109 @@ async def test_orchestrator_auth_failure_is_distinct(make_http, preset, caplog, 
         str(status) in rec.getMessage() and "unauthorized" in rec.getMessage()
         for rec in caplog.records
     )
+
+
+async def test_if_match_matching_replaces(http, preset):
+    created = (await http.post(f"{BASE}/schedules", json=body(preset))).json()
+    r = await http.put(
+        f"{BASE}/schedules/{created['id']}",
+        json=body(preset, prompt="changed"),
+        headers={"If-Match": f'"{created["updated_at"]}"'},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["prompt"] == "changed"
+    assert r.json()["updated_at"] != created["updated_at"]
+
+
+async def test_if_match_mismatch_is_412_and_writes_nothing(http, preset, db_url):
+    created = (await http.post(f"{BASE}/schedules", json=body(preset))).json()
+    sid = created["id"]
+    moved = (await http.put(f"{BASE}/schedules/{sid}", json=body(preset, prompt="v2"))).json()
+    listener = await listen_on(db_url, scheduler.CHANNEL)
+    async with listener:
+        r = await http.put(
+            f"{BASE}/schedules/{sid}",
+            json=body(preset, prompt="lost update"),
+            headers={"If-Match": f'"{created["updated_at"]}"'},
+        )
+        assert r.status_code == 412, r.text
+        assert r.json()["error"]["code"] == "precondition_failed"
+        assert not await got_notify(listener)
+    assert (await http.get(f"{BASE}/schedules/{sid}")).json() == moved
+
+
+async def test_if_match_absent_keeps_last_write_wins(http, preset):
+    created = (await http.post(f"{BASE}/schedules", json=body(preset))).json()
+    sid = created["id"]
+    await http.put(f"{BASE}/schedules/{sid}", json=body(preset, prompt="v2"))
+    r = await http.put(f"{BASE}/schedules/{sid}", json=body(preset, prompt="v3"))
+    assert r.status_code == 200, r.text
+    assert r.json()["prompt"] == "v3"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "garbage",
+        "2026-11-08T04:15:16.123456Z",  # not quoted
+        '"not a timestamp"',
+        '"2026-11-08T04:15:16"',  # no offset
+        'W/"2026-11-08T04:15:16.123456Z"',
+        "*",
+    ],
+)
+async def test_if_match_malformed_is_400(http, preset, value):
+    created = (await http.post(f"{BASE}/schedules", json=body(preset))).json()
+    r = await http.put(
+        f"{BASE}/schedules/{created['id']}",
+        json=body(preset, prompt="changed"),
+        headers={"If-Match": value},
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["error"]["code"] == "bad_request"
+    assert (await http.get(f"{BASE}/schedules/{created['id']}")).json() == created
+
+
+async def test_if_match_on_missing_schedule_is_404(http, preset):
+    r = await http.put(
+        f"{BASE}/schedules/{uuid.uuid4()}",
+        json=body(preset),
+        headers={"If-Match": '"2026-11-08T04:15:16.123456Z"'},
+    )
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "not_found"
+
+
+async def test_if_match_concurrent_puts_one_wins(http, preset, db_url):
+    created = (await http.post(f"{BASE}/schedules", json=body(preset))).json()
+    sid = created["id"]
+    tag = {"If-Match": f'"{created["updated_at"]}"'}
+    async with await psycopg.AsyncConnection.connect(db_url) as holder:
+        # A third connection holds the row lock so both PUTs queue behind it.
+        await holder.execute("SELECT 1 FROM schedules WHERE id = %s FOR UPDATE", (sid,))
+        puts = [
+            asyncio.create_task(
+                http.put(f"{BASE}/schedules/{sid}", json=body(preset, prompt=p), headers=tag)
+            )
+            for p in ("first", "second")
+        ]
+        async with await psycopg.AsyncConnection.connect(db_url, autocommit=True) as probe:
+            for _ in range(200):
+                cur = await probe.execute(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                )
+                row = await cur.fetchone()
+                assert row is not None
+                if row[0] == 2:
+                    break
+                await asyncio.sleep(0.02)
+            else:
+                pytest.fail("the PUTs never queued on the row lock")
+        await holder.commit()
+        results = await asyncio.gather(*puts)
+    assert sorted(r.status_code for r in results) == [200, 412]
+    winner = next(r for r in results if r.status_code == 200).json()
+    loser = next(r for r in results if r.status_code == 412).json()
+    assert loser["error"]["code"] == "precondition_failed"
+    assert (await http.get(f"{BASE}/schedules/{sid}")).json()["prompt"] == winner["prompt"]

@@ -34,9 +34,11 @@ ERROR_SCHEMAS: dict[str, Any] = {
 }
 
 ERRORS = {
+    400: "malformed If-Match header (bad_request)",
     403: "source address is not allowed (forbidden)",
     404: "not found (not_found)",
     409: "a schedule with this name already exists (conflict)",
+    412: "the schedule changed since the If-Match value was read (precondition_failed)",
     422: "invalid request (invalid_request, invalid_cron, invalid_timezone, unknown_preset, "
     "invalid_prompt)",
     503: "orchestrator unreachable or rejecting the token (orchestrator_unavailable, "
@@ -48,7 +50,7 @@ ROUTE_ERRORS: dict[tuple[str, str], tuple[int, ...]] = {
     ("post", "/schedules"): (403, 409, 422, 503),
     ("post", "/schedules/preview"): (403, 422),
     ("get", "/schedules/{schedule_id}"): (403, 404),
-    ("put", "/schedules/{schedule_id}"): (403, 404, 409, 422, 503),
+    ("put", "/schedules/{schedule_id}"): (400, 403, 404, 409, 412, 422, 503),
     ("delete", "/schedules/{schedule_id}"): (403, 404),
     ("post", "/schedules/{schedule_id}/run"): (403, 404),
     ("get", "/schedules/{schedule_id}/runs"): (403, 404, 422),

@@ -6,6 +6,7 @@ import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime
+from typing import Annotated
 from zoneinfo import ZoneInfo
 
 import psycopg
@@ -17,7 +18,7 @@ from agents_common.orchestrator import (
     OrchestratorError,
     OrchestratorUnavailable,
 )
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Header, Request, Response
 
 from agents_schedule import cron, scheduler
 from agents_schedule.api.errors import ApiError
@@ -105,7 +106,28 @@ async def _view_of(conn: psycopg.AsyncConnection, sched: schedules.Schedule) -> 
     return _view(sched, last[0] if last else None, datetime.now(UTC))
 
 
-async def _write(request: Request, data: ScheduleIn, schedule_id: uuid.UUID | None) -> ScheduleView:
+def _parse_if_match(raw: str) -> datetime:
+    """`If-Match: "<updated_at>"`: the schedule view's `updated_at` (RFC 3339) in double quotes."""
+    value = raw.strip()
+    try:
+        if len(value) < 2 or value[0] != '"' or value[-1] != '"':
+            raise ValueError("not quoted")
+        stamp = datetime.fromisoformat(value[1:-1])
+        if stamp.tzinfo is None:
+            raise ValueError("no UTC offset")
+    except ValueError:
+        raise ApiError(
+            400, "bad_request", "If-Match must be the schedule's updated_at in double quotes"
+        ) from None
+    return stamp
+
+
+async def _write(
+    request: Request,
+    data: ScheduleIn,
+    schedule_id: uuid.UUID | None,
+    expected_updated_at: datetime | None = None,
+) -> ScheduleView:
     settings: Settings = request.app.state.settings
     expr, tz_name, _ = _validate_cron(data.cron, data.timezone, settings)
     try:
@@ -126,13 +148,19 @@ async def _write(request: Request, data: ScheduleIn, schedule_id: uuid.UUID | No
             if schedule_id is None:
                 sched = await schedules.create(conn, **fields)
             else:
-                sched = await schedules.update(conn, schedule_id, **fields)
+                sched = await schedules.update(
+                    conn, schedule_id, expected_updated_at=expected_updated_at, **fields
+                )
             await notify(conn, scheduler.CHANNEL)
             return await _view_of(conn, sched)
     except schedules.ScheduleConflict as exc:
         raise ApiError(409, "conflict", "a schedule with this name already exists") from exc
     except schedules.ScheduleNotFound as exc:
         raise ApiError(404, "not_found", "schedule not found") from exc
+    except schedules.SchedulePreconditionFailed as exc:
+        raise ApiError(
+            412, "precondition_failed", "the schedule changed since If-Match was read"
+        ) from exc
 
 
 @router.get("/schedules", response_model=list[ScheduleView])
@@ -177,8 +205,16 @@ async def get_schedule(request: Request, schedule_id: str) -> ScheduleView:
 
 
 @router.put("/schedules/{schedule_id}", response_model=ScheduleView)
-async def replace_schedule(request: Request, schedule_id: str, data: ScheduleIn) -> ScheduleView:
-    return await _write(request, data, _parse_id(schedule_id))
+async def replace_schedule(
+    request: Request,
+    schedule_id: str,
+    data: ScheduleIn,
+    if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+) -> ScheduleView:
+    """Optional `If-Match: "<updated_at>"`: replace only if the schedule is unchanged, else 412."""
+    sid = _parse_id(schedule_id)
+    expected = None if if_match is None else _parse_if_match(if_match)
+    return await _write(request, data, sid, expected)
 
 
 @router.delete("/schedules/{schedule_id}", status_code=204)

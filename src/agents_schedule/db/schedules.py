@@ -28,6 +28,10 @@ class ScheduleNotFound(Exception):
     """No schedule has this id."""
 
 
+class SchedulePreconditionFailed(Exception):
+    """The schedule's `updated_at` is not the one the caller expected (If-Match)."""
+
+
 @dataclass(frozen=True)
 class Schedule:
     id: uuid.UUID
@@ -83,29 +87,49 @@ async def list_enabled(conn: psycopg.AsyncConnection) -> list[Schedule]:
     return await _fetch(conn, f"SELECT {_COLUMNS} FROM schedules WHERE enabled ORDER BY name")
 
 
-async def update(conn: psycopg.AsyncConnection, schedule_id: uuid.UUID, **fields: Any) -> Schedule:
-    """Full replace of name, cron, timezone, preset_id, prompt and enabled."""
+async def update(
+    conn: psycopg.AsyncConnection,
+    schedule_id: uuid.UUID,
+    *,
+    expected_updated_at: datetime | None = None,
+    **fields: Any,
+) -> Schedule:
+    """Full replace of name, cron, timezone, preset_id, prompt and enabled.
+
+    With `expected_updated_at` the row is locked (`FOR UPDATE`) and compared first, in the same
+    transaction as the write, so of two writers holding the same value only one succeeds.
+    """
     if fields.keys() != _UPDATABLE:
         raise TypeError(f"update needs exactly {sorted(_UPDATABLE)}, got {sorted(fields)}")
-    rows = await _fetch(
-        conn,
-        """
-        UPDATE schedules SET
-            name = %(name)s, cron = %(cron)s, timezone = %(timezone)s,
-            preset_id = %(preset_id)s, prompt = %(prompt)s, enabled = %(enabled)s,
-            armed_at = CASE
-                WHEN (%(enabled)s AND NOT enabled)
-                  OR %(cron)s <> cron OR %(timezone)s <> timezone THEN now()
-                ELSE armed_at END,
-            updated_at = now()
-        WHERE id = %(id)s
-        RETURNING """
-        + _COLUMNS,
-        {**fields, "id": schedule_id},
-    )
-    if not rows:
-        raise ScheduleNotFound(str(schedule_id))
-    return rows[0]
+    async with conn.transaction():
+        if expected_updated_at is not None:
+            cur = await conn.execute(
+                "SELECT updated_at FROM schedules WHERE id = %s FOR UPDATE", (schedule_id,)
+            )
+            row = await cur.fetchone()
+            if row is None:
+                raise ScheduleNotFound(str(schedule_id))
+            if row[0] != expected_updated_at:
+                raise SchedulePreconditionFailed(str(schedule_id))
+        rows = await _fetch(
+            conn,
+            """
+            UPDATE schedules SET
+                name = %(name)s, cron = %(cron)s, timezone = %(timezone)s,
+                preset_id = %(preset_id)s, prompt = %(prompt)s, enabled = %(enabled)s,
+                armed_at = CASE
+                    WHEN (%(enabled)s AND NOT enabled)
+                      OR %(cron)s <> cron OR %(timezone)s <> timezone THEN now()
+                    ELSE armed_at END,
+                updated_at = now()
+            WHERE id = %(id)s
+            RETURNING """
+            + _COLUMNS,
+            {**fields, "id": schedule_id},
+        )
+        if not rows:
+            raise ScheduleNotFound(str(schedule_id))
+        return rows[0]
 
 
 async def delete(conn: psycopg.AsyncConnection, schedule_id: uuid.UUID) -> None:

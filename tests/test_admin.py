@@ -116,3 +116,99 @@ async def test_ui_port_unchanged_and_needs_no_token(clients):
 def test_admin_app_has_no_openapi_or_docs(settings_for):
     app = create_admin_app(settings_for("postgresql://x/y"), None, None, ["t"])  # type: ignore[arg-type]
     assert app.openapi_url is None and app.docs_url is None
+
+
+CHAIN = {
+    "source": "webhook",
+    "source_ref": "evt-1",
+    "previous_name": "pr-review",
+    "previous_status": "handled",
+    "previous_session_slug": "pr-review-1",
+    "previous_result": "final text",
+}
+
+
+async def make_schedule(admin, token, fake, name: str = "target") -> str:
+    r = await admin.post(f"{BASE}/schedules", json=body(fake, name), headers=auth(token))
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+async def test_chain_route_creates_chained_run(clients, token, fake, db_url):
+    from test_api_runs import got_notify, listen_on
+
+    from agents_schedule import dispatcher
+
+    admin, _ = clients
+    sid = await make_schedule(admin, token, fake)
+    async with await listen_on(db_url, dispatcher.CHANNEL) as listener:
+        r = await admin.post(f"{BASE}/schedules/{sid}/chain", json=CHAIN, headers=auth(token))
+        assert r.status_code == 202, r.text
+        assert await got_notify(listener)
+    run = r.json()
+    assert run["trigger"] == "chained" and run["status"] == "new"
+    assert (run["chain_source"], run["chain_ref"]) == ("webhook", "evt-1")
+    assert (run["chained_from"], run["chain_depth"]) == (None, 1)
+    assert (run["previous_name"], run["previous_status"]) == ("pr-review", "handled")
+    stored = await admin.get(f"{BASE}/runs/{run['id']}", headers=auth(token))
+    assert stored.json()["id"] == run["id"]
+
+
+async def test_chain_route_idempotent(clients, token, fake):
+    admin, _ = clients
+    h = auth(token)
+    sid = await make_schedule(admin, token, fake)
+    first = await admin.post(f"{BASE}/schedules/{sid}/chain", json=CHAIN, headers=h)
+    again = await admin.post(f"{BASE}/schedules/{sid}/chain", json=CHAIN, headers=h)
+    assert (first.status_code, again.status_code) == (202, 200), again.text
+    assert again.json()["id"] == first.json()["id"]
+    listed = await admin.get(f"{BASE}/schedules/{sid}/runs", headers=h)
+    assert len(listed.json()) == 1
+
+
+async def test_chain_route_target_in_flight(clients, token, fake):
+    admin, _ = clients
+    h = auth(token)
+    sid = await make_schedule(admin, token, fake)
+    assert (await admin.post(f"{BASE}/schedules/{sid}/run", headers=h)).status_code == 202
+    r = await admin.post(f"{BASE}/schedules/{sid}/chain", json=CHAIN, headers=h)
+    assert r.status_code == 202, r.text
+    assert (r.json()["status"], r.json()["reason"]) == ("ignored", "previous_running")
+    again = await admin.post(f"{BASE}/schedules/{sid}/chain", json=CHAIN, headers=h)
+    assert again.status_code == 200 and again.json()["id"] == r.json()["id"]
+
+
+async def test_chain_route_unknown_schedule_404(clients, token):
+    admin, _ = clients
+    for sid in ("00000000-0000-0000-0000-000000000001", "nope"):
+        r = await admin.post(f"{BASE}/schedules/{sid}/chain", json=CHAIN, headers=auth(token))
+        assert r.status_code == 404, r.text
+        assert r.json()["error"]["code"] == "not_found"
+
+
+async def test_chain_route_not_on_ui_app(clients, token, fake):
+    admin, ui = clients
+    sid = await make_schedule(admin, token, fake)
+    r = await ui.post(f"{BASE}/schedules/{sid}/chain", json=CHAIN)
+    assert r.status_code in (404, 405)
+
+
+async def test_chain_route_requires_admin_token(clients, token, fake):
+    admin, _ = clients
+    sid = await make_schedule(admin, token, fake)
+    bad = {"Authorization": "Bearer " + secrets.token_urlsafe(24)}
+    for headers in ({}, bad):
+        r = await admin.post(f"{BASE}/schedules/{sid}/chain", json=CHAIN, headers=headers)
+        assert r.status_code == 401, r.text
+
+
+async def test_chain_route_rejects_extra_fields(clients, token, fake):
+    admin, _ = clients
+    sid = await make_schedule(admin, token, fake)
+    h = auth(token)
+    extra = await admin.post(f"{BASE}/schedules/{sid}/chain", json={**CHAIN, "x": 1}, headers=h)
+    assert extra.status_code == 422, extra.text
+    bad = await admin.post(
+        f"{BASE}/schedules/{sid}/chain", json={**CHAIN, "previous_status": "failed"}, headers=h
+    )
+    assert bad.status_code == 422, bad.text

@@ -300,6 +300,18 @@ async def get(conn: psycopg.AsyncConnection, run_id: uuid.UUID) -> Run | None:
     return await _fetch_one(conn, f"SELECT {_COLUMNS} FROM runs WHERE id = %s", (run_id,))
 
 
+async def get_chained(
+    conn: psycopg.AsyncConnection, schedule_id: uuid.UUID, chain_source: str, chain_ref: str
+) -> Run | None:
+    """The chained run of `schedule_id` for one source (the runs_chain_once key), if any."""
+    return await _fetch_one(
+        conn,
+        f"SELECT {_COLUMNS} FROM runs WHERE schedule_id = %s AND trigger = 'chained' "
+        "AND chain_source = %s AND chain_ref = %s",
+        (schedule_id, chain_source, chain_ref),
+    )
+
+
 async def latest_with_session(
     conn: psycopg.AsyncConnection, schedule_id: uuid.UUID, exclude_run_id: uuid.UUID
 ) -> Run | None:

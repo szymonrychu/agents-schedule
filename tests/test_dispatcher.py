@@ -283,6 +283,33 @@ async def test_global_cap_fifo(aconn, pool, client, fake, db_url):
     assert len(fake.sessions) == 4
 
 
+async def test_cap_hold_logged_once_per_poll(aconn, pool, client, fake, db_url, caplog):
+    settings = make_settings(db_url, max_in_progress=1, max_per_schedule=5)
+    preset = fake.add_preset("default")
+    sched = await add_schedule(aconn, preset.id)
+    for minutes in (0, 10, 20):
+        await add_run(aconn, sched.id, FIRE + timedelta(minutes=minutes))
+    while await dispatcher.dispatch_once(pool, client, settings):
+        pass
+
+    with caplog.at_level("INFO", logger=dispatcher.log.name):
+        await dispatcher.log_cap_hold(pool, settings)
+    (rec,) = [r for r in caplog.records if "in-progress cap" in r.getMessage()]
+    assert rec.levelname == "INFO"
+    assert "in_progress=1 cap=1 waiting=2" in rec.getMessage()
+
+
+async def test_no_cap_hold_log_below_cap(aconn, pool, client, fake, db_url, caplog):
+    settings = make_settings(db_url, max_in_progress=5, max_per_schedule=5)
+    preset = fake.add_preset("default")
+    sched = await add_schedule(aconn, preset.id)
+    await add_run(aconn, sched.id, FIRE)
+
+    with caplog.at_level("INFO", logger=dispatcher.log.name):
+        await dispatcher.log_cap_hold(pool, settings)
+    assert not [r for r in caplog.records if "in-progress cap" in r.getMessage()]
+
+
 class _Refused(httpx.AsyncBaseTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)

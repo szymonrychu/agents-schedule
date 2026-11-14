@@ -88,3 +88,46 @@ async def test_missing_id(aconn):
         await schedules.update(aconn, uuid.uuid4(), **fields())
     with pytest.raises(schedules.ScheduleNotFound):
         await schedules.delete(aconn, uuid.uuid4())
+
+
+async def three(aconn):
+    return [(await schedules.create(aconn, **fields(name=n))).id for n in ("a", "b", "c")]
+
+
+async def test_set_chain_keeps_order_and_replaces(aconn):
+    a, b, c = await three(aconn)
+    assert (await schedules.get(aconn, a)).then_schedule_ids == []
+    await schedules.set_chain(aconn, a, [c, b])
+    assert (await schedules.get(aconn, a)).then_schedule_ids == [c, b]
+    assert [s.then_schedule_ids for s in await schedules.list_all(aconn)] == [[c, b], [], []]
+    await schedules.set_chain(aconn, a, [b])
+    assert (await schedules.get(aconn, a)).then_schedule_ids == [b]
+    await schedules.set_chain(aconn, a, [])
+    assert (await schedules.get(aconn, a)).then_schedule_ids == []
+
+
+async def test_chain_cycle(aconn):
+    a, b, c = await three(aconn)
+    await schedules.set_chain(aconn, a, [b])
+    assert await schedules.chain_cycle(aconn, b, [a]) is True
+    await schedules.set_chain(aconn, b, [c])
+    assert await schedules.chain_cycle(aconn, c, [a]) is True
+    assert await schedules.chain_cycle(aconn, c, [b]) is True
+    assert await schedules.chain_cycle(aconn, c, []) is False
+
+
+async def test_chain_diamond_is_no_cycle(aconn):
+    a, b, c = await three(aconn)
+    d = (await schedules.create(aconn, **fields(name="d"))).id
+    await schedules.set_chain(aconn, b, [d])
+    await schedules.set_chain(aconn, c, [d])
+    assert await schedules.chain_cycle(aconn, a, [b, c]) is False
+
+
+async def test_chain_cycle_ignores_own_current_links(aconn):
+    a, b, c = await three(aconn)
+    await schedules.set_chain(aconn, a, [b])
+    # replacing a's links with [c] must not see the old a to b link
+    await schedules.set_chain(aconn, b, [c])
+    assert await schedules.chain_cycle(aconn, c, [a]) is True
+    assert await schedules.chain_cycle(aconn, a, [c]) is False

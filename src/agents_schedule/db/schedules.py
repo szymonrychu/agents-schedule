@@ -16,7 +16,13 @@ import psycopg
 from psycopg import errors
 from psycopg.rows import class_row
 
-_COLUMNS = "id, name, cron, timezone, preset_id, prompt, enabled, armed_at, created_at, updated_at"
+_COLUMNS = (
+    "id, name, cron, timezone, preset_id, prompt, enabled, armed_at, created_at, updated_at, "
+    "COALESCE((SELECT array_agg(c.next_schedule_id ORDER BY c.position) FROM schedule_chains c "
+    "WHERE c.schedule_id = schedules.id), '{}') AS then_schedule_ids"
+)
+# Serialises writes of chain links, so two concurrent writers cannot together build a cycle.
+_CHAIN_LOCK = 0x7363636E  # "sccn"
 _UPDATABLE = frozenset({"name", "cron", "timezone", "preset_id", "prompt", "enabled"})
 
 
@@ -44,6 +50,10 @@ class Schedule:
     armed_at: datetime
     created_at: datetime
     updated_at: datetime
+    then_schedule_ids: list[uuid.UUID]
+
+    def __hash__(self) -> int:  # the list field makes the generated hash fail
+        return hash(self.id)
 
 
 async def _fetch(conn: psycopg.AsyncConnection, query: str, params: Any = None) -> list[Schedule]:
@@ -130,6 +140,47 @@ async def update(
         if not rows:
             raise ScheduleNotFound(str(schedule_id))
         return rows[0]
+
+
+async def chain_lock(conn: psycopg.AsyncConnection) -> None:
+    """Take the transaction-scoped lock that serialises chain link writes."""
+    await conn.execute("SELECT pg_advisory_xact_lock(%s)", (_CHAIN_LOCK,))
+
+
+async def set_chain(
+    conn: psycopg.AsyncConnection, schedule_id: uuid.UUID, targets: list[uuid.UUID]
+) -> None:
+    """Replace the schedule's links with `targets`, in order (position = index)."""
+    async with conn.transaction():
+        await chain_lock(conn)
+        await conn.execute("DELETE FROM schedule_chains WHERE schedule_id = %s", (schedule_id,))
+        for position, target in enumerate(targets):
+            await conn.execute(
+                "INSERT INTO schedule_chains (schedule_id, next_schedule_id, position) "
+                "VALUES (%s, %s, %s)",
+                (schedule_id, target, position),
+            )
+
+
+async def chain_cycle(
+    conn: psycopg.AsyncConnection, schedule_id: uuid.UUID, targets: list[uuid.UUID]
+) -> bool:
+    """True when `schedule_id` is reachable from `targets`, taking `targets` as its new links."""
+    cur = await conn.execute(
+        """
+        WITH RECURSIVE reach(id) AS (
+            SELECT unnest(%(targets)s::uuid[])
+            UNION
+            SELECT c.next_schedule_id FROM schedule_chains c JOIN reach r ON c.schedule_id = r.id
+            WHERE c.schedule_id <> %(sid)s
+        )
+        SELECT EXISTS (SELECT 1 FROM reach WHERE id = %(sid)s)
+        """,
+        {"targets": targets, "sid": schedule_id},
+    )
+    row = await cur.fetchone()
+    assert row is not None
+    return bool(row[0])
 
 
 async def delete(conn: psycopg.AsyncConnection, schedule_id: uuid.UUID) -> None:

@@ -149,3 +149,19 @@ async def test_run_errors(http, pool):
         r = await http.get(BASE + path, params=params)
         assert r.status_code == 422, (path, params)
         assert r.json()["error"]["code"] == "invalid_request", (path, params)
+
+
+async def test_run_view_carries_chain_fields(http, pool):
+    src = await make_schedule(pool, "src")
+    target = await make_schedule(pool, "target")
+    async with pool.connection() as conn:
+        await schedules.set_chain(conn, src.id, [target.id])
+    r = await http.post(f"{BASE}/schedules/{src.id}/run")
+    run = r.json()
+    assert run["then_schedule_ids"] == [str(target.id)]
+    assert run["chain_status"] == "pending"
+    assert (run["chained_from"], run["chain_source"], run["chain_ref"]) == (None, None, None)
+    assert run["chain_depth"] == 0
+    assert (run["previous_name"], run["previous_status"]) == (None, None)
+    assert "result_text" not in run and "previous_result" not in run
+    assert (await http.get(f"{BASE}/runs/{run['id']}")).json() == run

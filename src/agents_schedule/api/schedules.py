@@ -94,6 +94,7 @@ def _view(sched: schedules.Schedule, last: runs.Run | None, now: datetime) -> Sc
         preset_id=sched.preset_id,
         prompt=sched.prompt,
         enabled=sched.enabled,
+        then_schedule_ids=sched.then_schedule_ids,
         next_fires=fires,
         last_run=RunView(**vars(last).copy()) if last else None,
         created_at=sched.created_at,
@@ -120,6 +121,21 @@ def _parse_if_match(raw: str) -> datetime:
             400, "bad_request", "If-Match must be the schedule's updated_at in double quotes"
         ) from None
     return stamp
+
+
+async def _set_chain(
+    conn: psycopg.AsyncConnection, schedule_id: uuid.UUID, targets: list[uuid.UUID]
+) -> None:
+    """Validate and store the links; the caller's transaction rolls back on an ApiError."""
+    await schedules.chain_lock(conn)
+    for target in targets:
+        if target == schedule_id:
+            raise ApiError(422, "chain_self", "a schedule cannot chain into itself")
+        if await schedules.get(conn, target) is None:
+            raise ApiError(422, "chain_target_unknown", f"schedule {target} does not exist")
+    if await schedules.chain_cycle(conn, schedule_id, targets):
+        raise ApiError(409, "chain_cycle", "these links would form a cycle")
+    await schedules.set_chain(conn, schedule_id, targets)
 
 
 async def _write(
@@ -151,6 +167,8 @@ async def _write(
                 sched = await schedules.update(
                     conn, schedule_id, expected_updated_at=expected_updated_at, **fields
                 )
+            await _set_chain(conn, sched.id, data.then_schedule_ids)
+            sched = await schedules.get(conn, sched.id) or sched
             await notify(conn, scheduler.CHANNEL)
             return await _view_of(conn, sched)
     except schedules.ScheduleConflict as exc:

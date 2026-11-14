@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ScheduleIn(BaseModel):
@@ -17,6 +17,14 @@ class ScheduleIn(BaseModel):
     preset_id: uuid.UUID
     prompt: str = Field(min_length=1, max_length=16384)
     enabled: bool = True
+    then_schedule_ids: list[uuid.UUID] = Field(default_factory=list, max_length=10)
+
+    @field_validator("then_schedule_ids")
+    @classmethod
+    def _no_duplicates(cls, value: list[uuid.UUID]) -> list[uuid.UUID]:
+        if len(set(value)) != len(value):
+            raise ValueError("then_schedule_ids must not contain duplicates")
+        return value
 
 
 class PreviewIn(BaseModel):
@@ -50,6 +58,14 @@ class RunView(BaseModel):
     updated_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    then_schedule_ids: list[uuid.UUID] | None
+    chain_status: str | None
+    chained_from: uuid.UUID | None
+    chain_source: str | None
+    chain_ref: str | None
+    chain_depth: int
+    previous_name: str | None
+    previous_status: str | None
 
 
 class ScheduleView(BaseModel):
@@ -60,6 +76,7 @@ class ScheduleView(BaseModel):
     preset_id: uuid.UUID
     prompt: str
     enabled: bool
+    then_schedule_ids: list[uuid.UUID]
     next_fires: list[datetime]
     last_run: RunView | None
     created_at: datetime

@@ -459,3 +459,79 @@ async def test_if_match_concurrent_puts_one_wins(http, preset, db_url):
     loser = next(r for r in results if r.status_code == 412).json()
     assert loser["error"]["code"] == "precondition_failed"
     assert (await http.get(f"{BASE}/schedules/{sid}")).json()["prompt"] == winner["prompt"]
+
+
+async def make(http, preset, name, **over):
+    r = await http.post(f"{BASE}/schedules", json=body(preset, name=name, **over))
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+async def test_chain_create_keeps_order_and_put_clears(http, preset):
+    a, b = await make(http, preset, "a"), await make(http, preset, "b")
+    assert a["then_schedule_ids"] == []
+    r = await http.post(
+        f"{BASE}/schedules", json=body(preset, name="src", then_schedule_ids=[b["id"], a["id"]])
+    )
+    assert r.status_code == 201, r.text
+    src = r.json()
+    assert src["then_schedule_ids"] == [b["id"], a["id"]]
+    got = (await http.get(f"{BASE}/schedules/{src['id']}")).json()
+    assert got["then_schedule_ids"] == [b["id"], a["id"]]
+    r = await http.put(f"{BASE}/schedules/{src['id']}", json=body(preset, name="src"))
+    assert r.status_code == 200, r.text
+    assert r.json()["then_schedule_ids"] == []
+
+
+async def test_chain_errors(http, preset):
+    a = await make(http, preset, "a")
+    r = await http.put(
+        f"{BASE}/schedules/{a['id']}", json=body(preset, name="a", then_schedule_ids=[a["id"]])
+    )
+    assert (r.status_code, r.json()["error"]["code"]) == (422, "chain_self")
+    ghost = str(uuid.uuid4())
+    r = await http.post(f"{BASE}/schedules", json=body(preset, name="x", then_schedule_ids=[ghost]))
+    assert (r.status_code, r.json()["error"]["code"]) == (422, "chain_target_unknown")
+    r = await http.post(
+        f"{BASE}/schedules", json=body(preset, name="x", then_schedule_ids=[a["id"], a["id"]])
+    )
+    assert r.status_code == 422
+    r = await http.post(
+        f"{BASE}/schedules",
+        json=body(preset, name="x", then_schedule_ids=[str(uuid.uuid4()) for _ in range(11)]),
+    )
+    assert r.status_code == 422
+    assert (await http.get(f"{BASE}/schedules")).json()[0]["name"] == "a"
+    assert len((await http.get(f"{BASE}/schedules")).json()) == 1
+
+
+async def test_chain_cycle_409_and_diamond_ok(http, preset):
+    a, b, c = [await make(http, preset, n) for n in "abc"]
+    r = await http.put(
+        f"{BASE}/schedules/{a['id']}", json=body(preset, name="a", then_schedule_ids=[b["id"]])
+    )
+    assert r.status_code == 200, r.text
+    r = await http.put(
+        f"{BASE}/schedules/{b['id']}", json=body(preset, name="b", then_schedule_ids=[c["id"]])
+    )
+    assert r.status_code == 200, r.text
+    r = await http.put(
+        f"{BASE}/schedules/{c['id']}", json=body(preset, name="c", then_schedule_ids=[a["id"]])
+    )
+    assert (r.status_code, r.json()["error"]["code"]) == (409, "chain_cycle")
+    assert (await http.get(f"{BASE}/schedules/{c['id']}")).json()["then_schedule_ids"] == []
+    r = await http.put(
+        f"{BASE}/schedules/{a['id']}",
+        json=body(preset, name="a", then_schedule_ids=[b["id"], c["id"]]),
+    )
+    assert r.status_code == 200, r.text
+
+
+async def test_chain_target_delete_drops_link(http, preset):
+    a, b = await make(http, preset, "a"), await make(http, preset, "b")
+    r = await http.put(
+        f"{BASE}/schedules/{a['id']}", json=body(preset, name="a", then_schedule_ids=[b["id"]])
+    )
+    assert r.status_code == 200
+    assert (await http.delete(f"{BASE}/schedules/{b['id']}")).status_code == 204
+    assert (await http.get(f"{BASE}/schedules/{a['id']}")).json()["then_schedule_ids"] == []

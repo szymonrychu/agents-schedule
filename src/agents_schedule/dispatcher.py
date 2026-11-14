@@ -181,6 +181,19 @@ async def resume_pending(
     return resumed
 
 
+async def log_cap_hold(pool: AsyncConnectionPool, settings: Settings) -> None:
+    """Log once when `new` runs wait while the in-progress cap is reached."""
+    async with pool.connection() as conn:
+        in_progress, waiting = await runs.count_in_progress_and_new(conn)
+    if waiting and in_progress >= settings.max_in_progress:
+        log.info(
+            "in-progress cap holds runs: in_progress=%d cap=%d waiting=%d",
+            in_progress,
+            settings.max_in_progress,
+            waiting,
+        )
+
+
 async def run_dispatcher(
     pool: AsyncConnectionPool,
     client: OrchestratorClient,
@@ -197,6 +210,7 @@ async def run_dispatcher(
             await resume_pending(pool, client, settings)
             while not stop.is_set() and await dispatch_once(pool, client, settings):
                 pass
+            await log_cap_hold(pool, settings)
             await _sleep(settings.poll_seconds, wake, stop)
     finally:
         listener.cancel()

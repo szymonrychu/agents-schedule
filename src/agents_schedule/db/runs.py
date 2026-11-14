@@ -243,5 +243,16 @@ async def list_recent(
     )
 
 
+async def count_in_progress_and_new(conn: psycopg.AsyncConnection) -> tuple[int, int]:
+    """(runs in-progress, runs new)."""
+    cur = await conn.execute(
+        "SELECT count(*) FILTER (WHERE status = 'in-progress'), "
+        "count(*) FILTER (WHERE status = 'new') FROM runs WHERE status IN ('new', 'in-progress')"
+    )
+    row = await cur.fetchone()
+    assert row is not None
+    return row[0], row[1]
+
+
 async def list_in_progress(conn: psycopg.AsyncConnection) -> list[Run]:
     return await _fetch(conn, f"SELECT {_COLUMNS} FROM runs WHERE status = 'in-progress' {_ORDER}")

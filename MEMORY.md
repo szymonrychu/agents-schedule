@@ -19,6 +19,15 @@ Lessons that outlive a session. Newest first.
 - The api process serves a second uvicorn app on `SCHED_ADMIN_PORT` when `SCHED_ADMIN_TOKENS_FILE` is set: the same routers as the ui app (one `_build_app`), wrapped in agents-common v0.6.0 `ServiceTokenGate` instead of `SourceAllowlist`. Off by default, so the ui deploy is unchanged. Why a second port, not a header on the first: the ui port is protected by peer CIDR behind oauth2-proxy and must keep that contract; the orchestrator relay needs bearer auth from other pods.
 - Chart: `admin.enabled` mounts the tokens Secret into the api pod only and adds an `admin` container and Service port; enabling it without `admin.tokensSecret.name` fails the render.
 
+## 2026-11-14 - in-progress cap raised to 8 in prod, cap hold logged
+
+- The default `SCHED_MAX_IN_PROGRESS` of 3 made runs queue as `new` behind a few long in-progress
+  runs. Prod (agents-helmfile `values/agents-schedule/common.yaml`) now sets 8; the code default
+  stays 3.
+- The dispatcher logs at INFO once per poll (`log_cap_hold`) when `new` runs wait while
+  in-progress >= cap: `in_progress`, `cap`, `waiting`. Only the global cap is reported, not the
+  per-schedule cap.
+
 ## 2026-10-28 - release job (semver-image-tags-at-the-end)
 
 - Every green main build ends with `release` (needs every other job, `contents: write`,

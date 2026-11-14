@@ -24,6 +24,7 @@ class Settings(BaseServiceSettings):
     poll_seconds: float = Field(10, ge=1, le=300)
     dispatch_max_attempts: int = Field(5, ge=1, le=20)
     run_timeout_seconds: int = Field(3600, ge=60, le=86400)
+    chain_max_wait_seconds: int = Field(86400, ge=60, le=604800)
     admin_port: int = Field(8001, ge=1, le=65535)
     admin_tokens_file: str | None = None
 

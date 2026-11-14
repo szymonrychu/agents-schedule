@@ -259,6 +259,22 @@ async def test_preview_prompt(http):
     assert r.json()["variables"] == []
 
 
+async def test_preview_previous_variables(http):
+    names = ["previous_schedule", "previous_status", "previous_session_slug", "previous_result"]
+    r = await http.post(
+        f"{BASE}/schedules/preview",
+        json={
+            "cron": "0 9 * * *",
+            "timezone": "UTC",
+            "prompt": "|".join("{{ " + n + " }}" for n in names),
+        },
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["rendered"] == "|||"
+    assert set(data["variables"]) >= set(names)
+
+
 async def test_preview_prompt_errors(http):
     base = {"cron": "0 9 * * *", "timezone": "UTC"}
     r = await http.post(f"{BASE}/schedules/preview", json=base | {"prompt": "{{ nope }}"})

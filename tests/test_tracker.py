@@ -242,3 +242,30 @@ async def test_unexpected_error_isolated_per_run(
     broken["on"] = False
     assert await tracker.track_once(pool, client, settings, datetime.now(UTC)) == 1
     assert (await state(aconn, bad)).status == "handled"
+
+
+async def test_result_text_captured_and_capped(aconn, pool, client, fake, settings):
+    preset = fake.add_preset("default")
+    short = await start_run(aconn, pool, client, settings, preset.id, "short")
+    long = await start_run(aconn, pool, client, settings, preset.id, "long")
+    fake.complete_turn(mid(short), "research-done")
+    fake.complete_turn(mid(long), "x" * 9000)
+
+    assert await tracker.track_once(pool, client, settings, datetime.now(UTC)) == 2
+
+    assert (await state(aconn, short)).result_text == "research-done"
+    assert (await state(aconn, long)).result_text == "x" * 8000
+    # captured at handled: the session going away later does not lose it
+    fake.remove_session(str(short.session_id))
+    assert (await state(aconn, short)).result_text == "research-done"
+
+
+async def test_failed_run_stores_no_result_text(aconn, pool, client, fake, settings):
+    preset = fake.add_preset("default")
+    run = await start_run(aconn, pool, client, settings, preset.id, "bad")
+    fake.fail_turn(mid(run))
+
+    assert await tracker.track_once(pool, client, settings, datetime.now(UTC)) == 1
+
+    got = await state(aconn, run)
+    assert (got.status, got.result_text) == ("failed", None)

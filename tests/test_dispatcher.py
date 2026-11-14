@@ -386,6 +386,61 @@ async def test_disabled_schedule_ignored(aconn, pool, client, fake, settings):
     assert len(fake.sessions) == 1
 
 
+async def add_chained(conn, schedule_id: uuid.UUID, **previous) -> runs.Run:
+    fields = {
+        "chain_source": "schedule",
+        "chain_ref": str(uuid.uuid4()),
+        "chained_from": None,
+        "chain_depth": 1,
+        "previous_name": "research",
+        "previous_status": "handled",
+        "previous_session_slug": "research-1234abcd",
+        "previous_result": "research-done",
+    } | previous
+    run = await runs.insert_chained(conn, schedule_id, datetime.now(UTC), "new", None, **fields)
+    assert run is not None
+    return run
+
+
+async def test_chained_run_on_disabled_target_dispatches(aconn, pool, client, fake, settings):
+    preset = fake.add_preset("default")
+    sched = await add_schedule(aconn, preset.id, enabled=False)
+    chained = await add_chained(aconn, sched.id)
+
+    assert await dispatcher.dispatch_once(pool, client, settings)
+    got = await runs.get(aconn, chained.id)
+    assert got.status == "in-progress" and got.message_id is not None
+
+    # a scheduled run of the same disabled schedule is still ignored
+    scheduled = await add_run(aconn, sched.id)
+    await finish(aconn, chained.id)
+    assert await dispatcher.dispatch_once(pool, client, settings)
+    got = await runs.get(aconn, scheduled.id)
+    assert (got.status, got.reason) == ("ignored", "schedule_disabled")
+
+
+async def test_chained_prompt_renders_previous(aconn, pool, client, fake, settings):
+    preset = fake.add_preset("default")
+    prompt = (
+        "after {{ previous_schedule }} ({{ previous_status }}, {{ previous_session_slug }}): "
+        "{{ previous_result }}"
+    )
+    sched = await add_schedule(aconn, preset.id, prompt=prompt)
+    chained = await add_chained(aconn, sched.id)
+
+    assert await dispatcher.dispatch_once(pool, client, settings)
+    got = await runs.get(aconn, chained.id)
+    text = fake.messages[int(got.message_id)]["text"]
+    assert text.startswith("after research (handled, research-1234abcd): research-done\n\n")
+
+    # not chained: the previous_* variables are empty strings
+    plain = await runs.insert_manual(aconn, sched.id, datetime.now(UTC), "new")
+    await finish(aconn, chained.id)
+    assert await dispatcher.dispatch_once(pool, client, settings)
+    got = await runs.get(aconn, plain.id)
+    assert fake.messages[int(got.message_id)]["text"].startswith("after  (, ): \n\n")
+
+
 async def test_reuse_posts_to_running_session(aconn, pool, client, fake, settings):
     preset = fake.add_preset("reuse", spec={"reuse_running_agent": True})
     sched = await add_schedule(aconn, preset.id)

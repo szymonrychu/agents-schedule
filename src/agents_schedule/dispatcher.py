@@ -49,7 +49,7 @@ from agents_common.templating import TemplateError
 from psycopg_pool import AsyncConnectionPool
 
 from agents_schedule.db import runs, schedules
-from agents_schedule.prompt import render_prompt, session_slug
+from agents_schedule.prompt import Previous, render_prompt, session_slug
 from agents_schedule.settings import Settings
 
 log = logging.getLogger(__name__)
@@ -255,6 +255,11 @@ async def _send(
     binding = common_runs.PresetBinding(str(schedule.preset_id), schedule.prompt)
     assert binding.prompt_template is not None
     fired_at = run.fire_time.astimezone(ZoneInfo(schedule.timezone))
+    previous = None
+    if run.trigger == "chained":
+        previous = Previous(
+            run.previous_name, run.previous_status, run.previous_session_slug, run.previous_result
+        )
     try:
         text = await asyncio.to_thread(
             render_prompt,
@@ -263,6 +268,7 @@ async def _send(
             fired_at,
             binding.preset_id,
             datetime.now(UTC),
+            previous,
         )
     except TemplateError as exc:
         await store.finish(run.id, "failed", f"prompt_invalid: {exc.message}")

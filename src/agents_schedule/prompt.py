@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 
 from agents_common import templating
@@ -13,23 +14,49 @@ _BASE_MAX = 24
 _NOT_LABEL = re.compile(r"[^a-z0-9]+")
 
 
+@dataclass(frozen=True)
+class Previous:
+    """The source run a chained run follows; every field may be empty."""
+
+    schedule: str | None = None
+    status: str | None = None
+    session_slug: str | None = None
+    result: str | None = None
+
+
 def prompt_context(
-    schedule_name: str, fired_at: datetime, preset: str, now: datetime
+    schedule_name: str,
+    fired_at: datetime,
+    preset: str,
+    now: datetime,
+    previous: Previous | None = None,
 ) -> dict[str, str]:
-    """The variables a prompt template can read; datetimes are ISO 8601."""
+    """The variables a prompt template can read; datetimes are ISO 8601. The `previous_*`
+    variables describe the source run of a chained run and are empty strings otherwise."""
+    previous = previous or Previous()
     return {
         "schedule_name": schedule_name,
         "fired_at": fired_at.isoformat(),
         "preset": preset,
         "now": now.isoformat(),
+        "previous_schedule": previous.schedule or "",
+        "previous_status": previous.status or "",
+        "previous_session_slug": previous.session_slug or "",
+        "previous_result": previous.result or "",
     }
 
 
 def render_prompt(
-    template: str, schedule_name: str, fired_at: datetime, preset: str, now: datetime
+    template: str,
+    schedule_name: str,
+    fired_at: datetime,
+    preset: str,
+    now: datetime,
+    previous: Previous | None = None,
 ) -> str:
     """Render the prompt Jinja template; raises `TemplateError` when it does not render."""
-    return templating.render(template, prompt_context(schedule_name, fired_at, preset, now))
+    context = prompt_context(schedule_name, fired_at, preset, now, previous)
+    return templating.render(template, context)
 
 
 def _slugify(text: str, max_len: int) -> str:

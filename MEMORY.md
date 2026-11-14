@@ -2,6 +2,31 @@
 
 Lessons that outlive a session. Newest first.
 
+## 2026-11-14 - chain watcher (tatara-trigger-chain, step 3)
+
+- `chain.py` runs as a fourth worker task. Order in `_advance`: `ignored`/`failed` source first
+  (`skipped`, even past the max wait), then expiry (`SCHED_CHAIN_MAX_WAIT_SECONDS` from the run's
+  `created_at`, checked before any session read), then wait while `new`/`in-progress`, then poll.
+  Why the status gate before the session read: a session that self-closes inside its first turn
+  must not chain before the run is handled, and a failed or timed-out run never chains.
+- Double fire has two guards in one transaction: the guarded `pending -> fired` update comes
+  first (a losing concurrent pass blocks on the row lock, re-checks and updates 0 rows), then the
+  inserts with `ON CONFLICT (chain_source, chain_ref, schedule_id) WHERE trigger = 'chained' DO
+  NOTHING`. Postgres `ON CONFLICT ON CONSTRAINT` does not accept a unique index, so the
+  inference form names the partial index's columns and predicate. A failure mid fan-out rolls
+  back the status too, so the next pass retries the whole fan-out.
+- A delivered run (`reuse = delivered`) chains at handled without a session read: it posted into
+  a session it does not own, so that session's lifetime says nothing about the run.
+- `fire_chain` checks depth once before the loop (all targets share the source's depth) and only
+  NOTIFYs when a `new` run was really inserted. `_insert` takes `extra` columns (module
+  constants) so chained inserts share the link snapshot SQL with scheduled and manual ones.
+- The tracker now uses agents-common `RecordingClient`; `_TrackStore.finish` writes
+  `result_text` (agents-common `result_text`, cap 8000) in the guarded handled update for both
+  tracked and delivered runs. `TransientLog` (tracker) is the once-per-minute warning shared by
+  the tracker and the chain watcher.
+- The preview needs no change: `prompt_context` always fills the `previous_*` keys (empty
+  strings unless the run is chained), so a template using them previews and renders.
+
 ## 2026-11-08 - If-Match on schedule PUT (preset-change-proposals B1)
 
 - `PUT /schedules/{id}` takes an optional `If-Match: "<updated_at>"` so the orchestrator can apply schedule proposals without lost updates (plan Q15 A). The tag is the view's `updated_at` (RFC 3339, double quotes), parsed with `datetime.fromisoformat` and compared as a datetime, so `Z` and `+00:00` spellings of the same instant match. Unquoted, naive, weak (`W/`) and `*` values are 400 `bad_request`; `*` is refused because no caller needs it.

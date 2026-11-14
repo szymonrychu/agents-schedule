@@ -37,6 +37,7 @@ def test_defaults(monkeypatch):
     assert s.poll_seconds == 10
     assert s.dispatch_max_attempts == 5
     assert s.run_timeout_seconds == 3600
+    assert s.chain_max_wait_seconds == 86400
     assert s.orchestrator_token.get_secret_value() == "s3cr3t-value"
     assert "s3cr3t-value" not in repr(s)
     assert "postgresql://u:p" not in repr(s)
@@ -128,3 +129,15 @@ def test_admin_port_must_differ_from_http_port(monkeypatch, tmp_path):
     with pytest.raises(SettingsError) as exc:
         load_settings()
     assert "SCHED_ADMIN_PORT" in exc.value.problems
+
+
+def test_chain_max_wait_bounds(monkeypatch):
+    set_env(monkeypatch, SCHED_CHAIN_MAX_WAIT_SECONDS="60")
+    assert load_settings().chain_max_wait_seconds == 60
+    set_env(monkeypatch, SCHED_CHAIN_MAX_WAIT_SECONDS="604800")
+    assert load_settings().chain_max_wait_seconds == 604800
+    for bad in ("59", "604801"):
+        set_env(monkeypatch, SCHED_CHAIN_MAX_WAIT_SECONDS=bad)
+        with pytest.raises(SettingsError) as err:
+            load_settings()
+        assert "SCHED_CHAIN_MAX_WAIT_SECONDS" in err.value.problems

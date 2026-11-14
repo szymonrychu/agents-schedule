@@ -1,8 +1,8 @@
 # The agents-common FakeOrchestrator (the library ships it as a class with in-process controls
 # only) served from the agents-schedule image. control.py adds what a test outside the pod needs,
 # all under /_ and without the bearer token: POST /_presets, GET /_calls (every /api/v1 request
-# with its body and answered status), GET /_state, POST /_messages/{id}/complete and
-# POST /_messages/{id}/fail_turn. The token comes from Secret fake-orchestrator-token.
+# with its body and answered status), GET /_state, POST /_messages/{id}/complete,
+# POST /_messages/{id}/fail_turn and POST /_sessions/{id}/close (the session asks to close). The token comes from Secret fake-orchestrator-token.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -60,12 +60,21 @@ data:
         return JSONResponse(fake.messages[mid])
 
 
+    async def close(request: Request):
+        sid = request.path_params["id"]
+        if sid not in fake.sessions:
+            return JSONResponse({"error": "no such session"}, status_code=404)
+        fake.request_close(sid)
+        return JSONResponse(fake.sessions[sid])
+
+
     fake.app.router.routes[:0] = [
         Route("/_presets", add_preset, methods=["POST"]),
         Route("/_calls", get_calls),
         Route("/_state", get_state),
         Route("/_messages/{id}/complete", complete, methods=["POST"]),
         Route("/_messages/{id}/fail_turn", fail_turn, methods=["POST"]),
+        Route("/_sessions/{id}/close", close, methods=["POST"]),
     ]
 
 

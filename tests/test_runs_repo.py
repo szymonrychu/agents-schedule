@@ -237,3 +237,40 @@ async def test_listings(aconn):
     assert [r.id for r in await runs.list_recent(aconn)] == [r3.id, r2.id, r1.id]
     assert [r.id for r in await runs.list_recent(aconn, "new", 1)] == [r3.id]
     assert [r.id for r in await runs.list_in_progress(aconn)] == [r2.id]
+
+
+async def chain_of(aconn, n=2):
+    from agents_schedule.db import schedules
+
+    src = await add_schedule(aconn, "src")
+    targets = [await add_schedule(aconn, f"t{i}") for i in range(n)]
+    await schedules.set_chain(aconn, src, targets)
+    return src, targets
+
+
+async def test_insert_snapshots_chain_links(aconn):
+    src, targets = await chain_of(aconn)
+    sched = await runs.insert_scheduled(aconn, src, at(0), "new")
+    manual = await runs.insert_manual(aconn, src, at(1), "new")
+    for run in (sched, manual):
+        assert run.then_schedule_ids == targets
+        assert run.chain_status == "pending"
+        assert (run.chain_depth, run.chained_from, run.result_text) == (0, None, None)
+    plain = await add_schedule(aconn, "plain")
+    run = await runs.insert_manual(aconn, plain, at(2), "new")
+    assert (run.then_schedule_ids, run.chain_status) == ([], None)
+
+
+async def test_ignored_run_gets_no_chain_status(aconn):
+    src, targets = await chain_of(aconn)
+    run = await runs.insert_manual(aconn, src, at(0), "ignored", "previous_running")
+    assert run.chain_status is None
+
+
+async def test_editing_links_after_insert_keeps_snapshot(aconn):
+    from agents_schedule.db import schedules
+
+    src, targets = await chain_of(aconn)
+    run = await runs.insert_manual(aconn, src, at(0), "new")
+    await schedules.set_chain(aconn, src, [targets[1]])
+    assert (await runs.get(aconn, run.id)).then_schedule_ids == targets

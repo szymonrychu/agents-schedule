@@ -28,6 +28,23 @@ Lessons that outlive a session. Newest first.
   in-progress >= cap: `in_progress`, `cap`, `waiting`. Only the global cap is reported, not the
   per-schedule cap.
 
+## 2026-11-14 - chain links (tatara-trigger-chain, step 2)
+
+- Migration 0004 is additive: `schedule_chains` (fan-out links, cascade on both ends) and the
+  runs chain columns. Nothing fires chains yet; the worker pass comes in the next step.
+- Links are snapshotted into `runs.then_schedule_ids` inside the `_insert` statement itself
+  (INSERT ... SELECT from `schedule_chains`), so a run's chain never changes after insert, and
+  `chain_status` is `pending` only for a `new` run with links (an `ignored` run never chains).
+- Cycle safety: every link write takes the advisory lock `_CHAIN_LOCK` (`chain_lock`) before
+  `chain_cycle` and `set_chain`, in the PUT's own transaction, so two concurrent PUTs cannot
+  each pass the check and then close a cycle together. `chain_cycle` treats the schedule's own
+  stored links as replaced by the new targets.
+- `Schedule.then_schedule_ids` comes from a correlated subquery in `_COLUMNS`, so `_write`
+  re-reads the schedule after `set_chain` (the RETURNING of create/update predates it).
+- `Run` and `Schedule` define `__hash__` on `id`: the list field breaks the generated hash and
+  tests use runs as dict keys.
+- RunView omits `result_text` and `previous_result` (they can be long).
+
 ## 2026-10-28 - release job (semver-image-tags-at-the-end)
 
 - Every green main build ends with `release` (needs every other job, `contents: write`,

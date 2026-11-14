@@ -33,6 +33,7 @@ def test_migrate_idempotent(empty_db_url, settings_for):
         "0001_schedules.sql",
         "0002_prompt_jinja.sql",
         "0003_run_not_before.sql",
+        "0004_chain.sql",
     ]
     assert migrate(settings) == []
     with psycopg.connect(empty_db_url) as conn:
@@ -53,6 +54,7 @@ def test_concurrent_migrate_applies_once(empty_db_url, settings_for):
         "0001_schedules.sql",
         "0002_prompt_jinja.sql",
         "0003_run_not_before.sql",
+        "0004_chain.sql",
     ]
 
 
@@ -156,3 +158,71 @@ def test_runs_not_before_column(conn):
         "WHERE table_name = 'runs' AND column_name = 'not_before'"
     ).fetchone()
     assert row == ("timestamp with time zone", "YES")
+
+
+def test_chained_trigger_and_once_guard(conn):
+    sid = add_schedule(conn)
+    add_run(conn, sid, trigger="chained", chain_source="schedule", chain_ref="r1")
+    add_run(
+        conn,
+        sid,
+        fire="2026-01-02T00:00:00Z",
+        trigger="chained",
+        chain_source="schedule",
+        chain_ref="r2",
+    )
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        add_run(
+            conn,
+            sid,
+            fire="2026-01-03T00:00:00Z",
+            trigger="chained",
+            chain_source="schedule",
+            chain_ref="r1",
+        )
+    other = add_schedule(conn, "other")
+    add_run(conn, other, trigger="chained", chain_source="schedule", chain_ref="r1")
+    add_run(
+        conn,
+        other,
+        fire="2026-01-04T00:00:00Z",
+        trigger="chained",
+        chain_source="webhook",
+        chain_ref="r1",
+    )
+
+
+@pytest.mark.parametrize(
+    "cols", [{"chain_status": "done"}, {"chain_source": "cron"}, {"chain_depth": None}]
+)
+def test_chain_columns_checked(conn, cols):
+    sid = add_schedule(conn)
+    with pytest.raises((psycopg.errors.CheckViolation, psycopg.errors.NotNullViolation)):
+        add_run(conn, sid, **cols)
+
+
+def test_chain_columns_defaults_and_accepted(conn):
+    sid = add_schedule(conn)
+    for i, status in enumerate(("pending", "fired", "skipped", "expired")):
+        add_run(conn, sid, fire=f"2026-01-0{i + 1}T00:00:00Z", chain_status=status)
+    row = conn.execute(
+        "SELECT chain_depth, then_schedule_ids, result_text FROM runs LIMIT 1"
+    ).fetchone()
+    assert row == (0, None, None)
+
+
+def test_schedule_chains_constraints_and_cascade(conn):
+    a, b, c = add_schedule(conn, "a"), add_schedule(conn, "b"), add_schedule(conn, "c")
+    ins = (
+        "INSERT INTO schedule_chains (schedule_id, next_schedule_id, position) VALUES (%s, %s, %s)"
+    )
+    conn.execute(ins, (a, b, 0))
+    conn.execute(ins, (a, c, 1))
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        conn.execute(ins, (a, b, 2))
+    with pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute(ins, (a, a, 0))
+    conn.execute("DELETE FROM schedules WHERE id = %s", (b,))
+    assert conn.execute("SELECT next_schedule_id FROM schedule_chains").fetchall() == [(c,)]
+    conn.execute("DELETE FROM schedules WHERE id = %s", (a,))
+    assert conn.execute("SELECT count(*) FROM schedule_chains").fetchone()[0] == 0

@@ -32,7 +32,9 @@ async def fire_lock(conn: psycopg.AsyncConnection, schedule_id: uuid.UUID) -> No
 
 _COLUMNS = (
     "id, schedule_id, trigger, fire_time, status, reason, attempts, session_slug, session_id, "
-    "message_id, reuse, created_at, updated_at, started_at, finished_at, not_before"
+    "message_id, reuse, created_at, updated_at, started_at, finished_at, not_before, "
+    "then_schedule_ids, chain_status, result_text, chained_from, chain_source, chain_ref, "
+    "chain_depth, previous_name, previous_status, previous_session_slug, previous_result"
 )
 _ORDER = "ORDER BY fire_time DESC, created_at DESC"
 
@@ -73,6 +75,20 @@ class Run:
     started_at: datetime | None
     finished_at: datetime | None
     not_before: datetime | None
+    then_schedule_ids: list[uuid.UUID] | None
+    chain_status: str | None
+    result_text: str | None
+    chained_from: uuid.UUID | None
+    chain_source: str | None
+    chain_ref: str | None
+    chain_depth: int
+    previous_name: str | None
+    previous_status: str | None
+    previous_session_slug: str | None
+    previous_result: str | None
+
+    def __hash__(self) -> int:  # the list field makes the generated hash fail
+        return hash(self.id)
 
 
 async def _fetch(conn: psycopg.AsyncConnection, query: str, params: Any = None) -> list[Run]:
@@ -95,19 +111,26 @@ async def _insert(
     reason: str | None,
     tail: str = "",
 ) -> Run | None:
+    # The links are snapshotted into the run, so later edits never change a run's chain; only a
+    # `new` run with links gets chain_status 'pending' (an ignored run never chains).
     return await _fetch_one(
         conn,
-        "INSERT INTO runs (id, schedule_id, trigger, fire_time, status, reason, finished_at) "
-        f"VALUES (%s, %s, %s, %s, %s, %s, %s) {tail} RETURNING {_COLUMNS}",
-        (
-            uuid.uuid4(),
-            schedule_id,
-            trigger,
-            fire_time,
-            status,
-            reason,
-            datetime.now(UTC) if status == "ignored" else None,
-        ),
+        "INSERT INTO runs (id, schedule_id, trigger, fire_time, status, reason, finished_at, "
+        "then_schedule_ids, chain_status) "
+        "SELECT %(id)s, %(sid)s, %(trigger)s, %(fire)s, %(status)s, %(reason)s, %(finished)s, "
+        "l.ids, CASE WHEN %(status)s = 'new' AND cardinality(l.ids) > 0 THEN 'pending' END "
+        "FROM (SELECT COALESCE(array_agg(next_schedule_id ORDER BY position), '{}') AS ids "
+        "FROM schedule_chains WHERE schedule_id = %(sid)s) l "
+        f"{tail} RETURNING {_COLUMNS}",
+        {
+            "id": uuid.uuid4(),
+            "sid": schedule_id,
+            "trigger": trigger,
+            "fire": fire_time,
+            "status": status,
+            "reason": reason,
+            "finished": datetime.now(UTC) if status == "ignored" else None,
+        },
     )
 
 

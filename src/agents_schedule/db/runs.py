@@ -21,6 +21,8 @@ from psycopg.rows import class_row
 _CLAIM_LOCK = 0x73636864  # "schd"
 # First key of the two-key advisory lock that serialises one schedule's inserts.
 _FIRE_LOCK = 0x73636874  # "scht"
+MAX_CHAIN_DEPTH = 10
+"""Runtime backstop against chain loops: a chained run is at most this many links deep."""
 
 
 async def fire_lock(conn: psycopg.AsyncConnection, schedule_id: uuid.UUID) -> None:
@@ -110,15 +112,21 @@ async def _insert(
     status: str,
     reason: str | None,
     tail: str = "",
+    extra: dict[str, Any] | None = None,
 ) -> Run | None:
     # The links are snapshotted into the run, so later edits never change a run's chain; only a
-    # `new` run with links gets chain_status 'pending' (an ignored run never chains).
+    # `new` run with links gets chain_status 'pending' (an ignored run never chains). `extra`
+    # names further columns; its keys are constants of this module, never caller input.
+    extra = extra or {}
+    columns = "".join(f", {name}" for name in extra)
+    values = "".join(f", %({name})s" for name in extra)
     return await _fetch_one(
         conn,
         "INSERT INTO runs (id, schedule_id, trigger, fire_time, status, reason, finished_at, "
-        "then_schedule_ids, chain_status) "
+        f"then_schedule_ids, chain_status{columns}) "
         "SELECT %(id)s, %(sid)s, %(trigger)s, %(fire)s, %(status)s, %(reason)s, %(finished)s, "
-        "l.ids, CASE WHEN %(status)s = 'new' AND cardinality(l.ids) > 0 THEN 'pending' END "
+        "l.ids, CASE WHEN %(status)s = 'new' AND cardinality(l.ids) > 0 THEN 'pending' END"
+        f"{values} "
         "FROM (SELECT COALESCE(array_agg(next_schedule_id ORDER BY position), '{}') AS ids "
         "FROM schedule_chains WHERE schedule_id = %(sid)s) l "
         f"{tail} RETURNING {_COLUMNS}",
@@ -130,6 +138,7 @@ async def _insert(
             "status": status,
             "reason": reason,
             "finished": datetime.now(UTC) if status == "ignored" else None,
+            **extra,
         },
     )
 
@@ -163,6 +172,64 @@ async def insert_manual(
     run = await _insert(conn, schedule_id, "manual", now, status, reason)
     assert run is not None
     return run
+
+
+async def insert_chained(
+    conn: psycopg.AsyncConnection,
+    target: uuid.UUID,
+    now: datetime,
+    status: str,
+    reason: str | None,
+    *,
+    chain_source: str,
+    chain_ref: str,
+    chained_from: uuid.UUID | None,
+    chain_depth: int,
+    previous_name: str,
+    previous_status: str,
+    previous_session_slug: str | None,
+    previous_result: str | None,
+) -> Run | None:
+    """Record the chained run of `target` for one source; None when that source already chained
+    into `target` (unique index runs_chain_once). The target's own links are snapshotted, so a
+    chained run chains on in turn."""
+    return await _insert(
+        conn,
+        target,
+        "chained",
+        now,
+        status,
+        reason,
+        "ON CONFLICT (chain_source, chain_ref, schedule_id) WHERE trigger = 'chained' DO NOTHING",
+        {
+            "chain_source": chain_source,
+            "chain_ref": chain_ref,
+            "chained_from": chained_from,
+            "chain_depth": chain_depth,
+            "previous_name": previous_name,
+            "previous_status": previous_status,
+            "previous_session_slug": previous_session_slug,
+            "previous_result": previous_result,
+        },
+    )
+
+
+async def list_chain_pending(conn: psycopg.AsyncConnection) -> list[Run]:
+    """Runs whose chain has not fired, skipped or expired yet, oldest first."""
+    return await _fetch(
+        conn,
+        f"SELECT {_COLUMNS} FROM runs WHERE chain_status = 'pending' ORDER BY created_at, id",
+    )
+
+
+async def set_chain_status(conn: psycopg.AsyncConnection, run_id: uuid.UUID, new: str) -> bool:
+    """Move a pending chain to `new`; False when another pass already moved it."""
+    cur = await conn.execute(
+        "UPDATE runs SET chain_status = %s, updated_at = now() "
+        "WHERE id = %s AND chain_status = 'pending'",
+        (new, run_id),
+    )
+    return cur.rowcount == 1
 
 
 async def last_scheduled_fire(

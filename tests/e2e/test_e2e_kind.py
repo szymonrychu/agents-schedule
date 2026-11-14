@@ -111,8 +111,13 @@ class Fake:
             if c["method"] == "POST" and c["path"] == f"/api/v1/sessions/{session_id}/messages"
         ]
 
-    def complete(self, message_id: str) -> None:
-        r = self.http.post(f"/_messages/{message_id}/complete", json={"text": "done"})
+    def complete(self, message_id: str, text: str = "done") -> None:
+        r = self.http.post(f"/_messages/{message_id}/complete", json={"text": text})
+        assert r.status_code == 200, r.text
+
+    def close(self, session_id: str) -> None:
+        """The session asks to close (self-close)."""
+        r = self.http.post(f"/_sessions/{session_id}/close")
         assert r.status_code == 200, r.text
 
     def fail_turn(self, message_id: str) -> None:
@@ -563,6 +568,36 @@ def test_two_workers_one_run_and_one_session_per_fire(api: Api, fake: Fake, make
 
 
 # --- delete, health, coverage ------------------------------------------------------------------
+
+
+def test_chain_runs_disabled_target_with_previous_result(api: Api, fake: Fake, make_schedule):
+    preset = fake.preset()
+    target = make_schedule(preset, enabled=False, prompt="pill from: {{ previous_result }}")
+    source = make_schedule(preset, then_schedule_ids=[target["id"]])
+    run = run_now(api, source["id"])
+    assert run["then_schedule_ids"] == [target["id"]] and run["chain_status"] == "pending"
+
+    running = wait_run(api, run["id"], "in-progress")
+    fake.complete(running["message_id"], "research-done")
+    wait_run(api, run["id"], "handled")
+    # the session is still active: nothing chains yet
+    assert get_run(api, run["id"])["chain_status"] == "pending"
+    assert schedule_runs(api, target["id"]) == []
+
+    fake.close(running["session_id"])
+
+    def chained() -> dict[str, Any] | None:
+        got = [r for r in schedule_runs(api, target["id"]) if r["trigger"] == "chained"]
+        return got[0] if got and got[0]["message_id"] else None
+
+    next_run = wait_for(chained, "the chained run of the target to be posted")
+    assert next_run["chained_from"] == run["id"] and next_run["chain_depth"] == 1
+    assert get_run(api, run["id"])["chain_status"] == "fired"
+    (prompt,) = fake.posts(next_run["session_id"])
+    assert "pill from: research-done" in prompt["body"]["text"]
+    handled_run = handled(api, fake, next_run["id"])
+    assert handled_run["trigger"] == "chained"
+    assert len(schedule_runs(api, target["id"])) == 1
 
 
 def test_delete_removes_the_schedule_and_its_runs(api: Api, fake: Fake, make_schedule):

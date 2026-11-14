@@ -3,7 +3,9 @@
 `track_once` polls the message of each in-progress run once, on agents-common `runs.track`
 (first turn of a created session) or `runs.track_delivery` (a prompt delivered to a reused
 session). Every change is the guarded `in-progress -> handled|failed` transition of the
-dispatcher's `RunsStore`, so a run already moved by another process is left alone. A delivered
+dispatcher's `RunsStore`, so a run already moved by another process is left alone. A handled
+run stores its turn's final text (`result_text`, capped by agents-common) in that same update,
+so it survives the session being purged and feeds a chained run's `previous_result`. A delivered
 run whose message is gone is reset to `reuse = fallback` with session and message cleared, and
 the dispatcher resumes it with a new session. A transient orchestrator error leaves the run
 unchanged and is logged once per run per minute. The service never deletes sessions: cleanup
@@ -20,7 +22,6 @@ from datetime import UTC, datetime, timedelta
 
 from agents_common import runs as common_runs
 from agents_common.orchestrator import (
-    Message,
     OrchestratorClient,
     OrchestratorError,
     OrchestratorUnavailable,
@@ -34,49 +35,61 @@ from agents_schedule.settings import Settings
 log = logging.getLogger(__name__)
 
 LOG_INTERVAL = timedelta(minutes=1)
-_last_logged: dict[uuid.UUID, datetime] = {}
-"""When the transient error of each run was last logged."""
+
+
+class TransientLog:
+    """Logs a run's transient orchestrator error at most once per `LOG_INTERVAL`."""
+
+    def __init__(self, logger: logging.Logger, what: str) -> None:
+        self._log = logger
+        self._what = what
+        self._last: dict[uuid.UUID, datetime] = {}
+
+    def keep_only(self, run_ids: set[uuid.UUID]) -> None:
+        """Forget the runs no longer polled."""
+        for gone in set(self._last) - run_ids:
+            del self._last[gone]
+
+    def warn(self, run_id: uuid.UUID, exc: Exception, now: datetime) -> None:
+        last = self._last.get(run_id)
+        if last is None or now - last >= LOG_INTERVAL:
+            self._last[run_id] = now
+            self._log.warning("run %s: %s failed, will retry: %s", run_id, self._what, exc)
+
+
+_transient = TransientLog(log, "tracking")
 
 
 class _TrackStore(RunsStore):
-    """The runs store that finishes a handled run at its turn's `completed_at`."""
+    """The runs store that finishes a handled run at its turn's `completed_at` and stores the
+    turn's final text (`result_text`) in the same guarded update."""
 
-    def __init__(self, pool: AsyncConnectionPool) -> None:
+    def __init__(self, pool: AsyncConnectionPool, client: common_runs.RecordingClient) -> None:
         super().__init__(pool)
-        self.message: Message | None = None
+        self._client = client
 
     async def finish(
         self, run_id: common_runs.RunId, status: common_runs.RunStatus, reason: str | None
     ) -> bool:
-        turn = self.message.turn if self.message is not None else None
-        if status == "handled" and turn is not None and turn.completed_at is not None:
-            async with self._pool.connection() as conn:
-                return await runs.transition(
-                    conn,
-                    uuid.UUID(str(run_id)),
-                    "in-progress",
-                    status,
-                    reason=reason,
-                    finished_at=turn.completed_at,
-                )
-        return await super().finish(run_id, status, reason)
+        if status != "handled":
+            return await super().finish(run_id, status, reason)
+        message = self._client.message
+        turn = message.turn if message is not None else None
+        finished_at = turn.completed_at if turn is not None and turn.completed_at else None
+        async with self._pool.connection() as conn:
+            return await runs.transition(
+                conn,
+                uuid.UUID(str(run_id)),
+                "in-progress",
+                status,
+                reason=reason,
+                finished_at=finished_at or datetime.now(UTC),
+                result_text=common_runs.result_text(message),
+            )
 
     async def reset_to_fallback(self, run_id: uuid.UUID) -> bool:
         """Forget the delivery in one guarded update so the dispatcher creates a session."""
         return await self._set(run_id, reuse="fallback", session_id=None, message_id=None)
-
-
-class _RecordingClient(OrchestratorClient):
-    """The client of `inner`, remembering the last message it read for the store."""
-
-    def __init__(self, inner: OrchestratorClient, store: _TrackStore) -> None:
-        self._inner = inner
-        self._store = store
-
-    async def get_message(self, message_id: int) -> Message:
-        message = await self._inner.get_message(message_id)
-        self._store.message = message
-        return message
 
 
 async def track_once(
@@ -85,16 +98,16 @@ async def track_once(
     """Poll every in-progress run with a message once; returns how many runs it moved."""
     async with pool.connection() as conn:
         active = [r for r in await runs.list_in_progress(conn) if r.message_id is not None]
-    for gone in set(_last_logged) - {r.id for r in active}:
-        del _last_logged[gone]
+    _transient.keep_only({r.id for r in active})
     moved = 0
     for run in active:
-        store = _TrackStore(pool)
+        recording = common_runs.RecordingClient(client)
+        store = _TrackStore(pool, recording)
         try:
-            if await _track(_RecordingClient(client, store), store, settings, run, now):
+            if await _track(recording, store, settings, run, now):
                 moved += 1
         except (OrchestratorError, OrchestratorUnavailable) as exc:
-            _log_transient(run, exc, now)
+            _transient.warn(run.id, exc, now)
         except Exception:
             log.exception("run %s: unexpected tracking error, will retry", run.id)
     return moved
@@ -130,13 +143,6 @@ async def _track(
         log.info("run %s: handled", run.id)
         return True
     return (now - run.started_at).total_seconds() > timeout
-
-
-def _log_transient(run: runs.Run, exc: Exception, now: datetime) -> None:
-    last = _last_logged.get(run.id)
-    if last is None or now - last >= LOG_INTERVAL:
-        _last_logged[run.id] = now
-        log.warning("run %s: tracking failed, will retry: %s", run.id, exc)
 
 
 async def run_tracker(

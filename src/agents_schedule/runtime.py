@@ -16,6 +16,7 @@ from psycopg_pool import AsyncConnectionPool
 from starlette.types import ASGIApp
 
 from agents_schedule.api.app import create_admin_app, create_app
+from agents_schedule.chain import run_chain
 from agents_schedule.dispatcher import run_dispatcher
 from agents_schedule.scheduler import run_scheduler
 from agents_schedule.settings import Settings
@@ -97,11 +98,14 @@ async def _hold_and_run(
     log.info("worker waiting for the lock %s", LOCK_NAME)
     async with advisory_singleton(pool, LOCK_NAME):
         holding.set()
-        log.info("worker holds the lock %s: scheduler, dispatcher and tracker start", LOCK_NAME)
+        log.info(
+            "worker holds the lock %s: scheduler, dispatcher, tracker and chain start", LOCK_NAME
+        )
         async with asyncio.TaskGroup() as group:
             group.create_task(run_scheduler(pool, settings, stop), name="scheduler")
             group.create_task(run_dispatcher(pool, client, settings, stop), name="dispatcher")
             group.create_task(run_tracker(pool, client, settings, stop), name="tracker")
+            group.create_task(run_chain(pool, client, settings, stop), name="chain")
 
 
 async def _work(settings: Settings, stop: asyncio.Event) -> None:
@@ -123,7 +127,8 @@ async def _work(settings: Settings, stop: asyncio.Event) -> None:
 
 
 def worker_main(settings: Settings) -> int:
-    """Run the scheduler, dispatcher and tracker under the singleton lock; the exit code."""
+    """Run the scheduler, dispatcher, tracker and chain watcher under the singleton lock; the
+    exit code."""
     configure_logging(settings)
     return asyncio.run(
         run_service(

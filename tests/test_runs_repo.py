@@ -274,3 +274,72 @@ async def test_editing_links_after_insert_keeps_snapshot(aconn):
     run = await runs.insert_manual(aconn, src, at(0), "new")
     await schedules.set_chain(aconn, src, [targets[1]])
     assert (await runs.get(aconn, run.id)).then_schedule_ids == targets
+
+
+def chained(**overrides):
+    base = {
+        "chain_source": "schedule",
+        "chain_ref": str(uuid.uuid4()),
+        "chained_from": None,
+        "chain_depth": 1,
+        "previous_name": "src",
+        "previous_status": "handled",
+        "previous_session_slug": "src-1234abcd",
+        "previous_result": "done",
+    }
+    return base | overrides
+
+
+async def test_insert_chained_once_per_source_and_target(aconn):
+    src, (b, c) = await chain_of(aconn)
+    source = await runs.insert_manual(aconn, src, at(0), "new")
+    fields = chained(chain_ref=str(source.id), chained_from=source.id)
+    run = await runs.insert_chained(aconn, b, at(1), "new", None, **fields)
+    assert run is not None
+    assert (run.trigger, run.status, run.schedule_id, run.fire_time) == ("chained", "new", b, at(1))
+    assert (run.chain_source, run.chain_ref, run.chained_from, run.chain_depth) == (
+        "schedule",
+        str(source.id),
+        source.id,
+        1,
+    )
+    assert (run.previous_name, run.previous_status) == ("src", "handled")
+    assert (run.previous_session_slug, run.previous_result) == ("src-1234abcd", "done")
+    assert await runs.insert_chained(aconn, b, at(2), "new", None, **fields) is None
+    assert await runs.insert_chained(aconn, c, at(2), "new", None, **fields) is not None
+
+
+async def test_insert_chained_snapshots_target_links(aconn):
+    src, (b,) = await chain_of(aconn, 1)
+    from agents_schedule.db import schedules
+
+    c = await add_schedule(aconn, "c")
+    await schedules.set_chain(aconn, b, [c])
+    run = await runs.insert_chained(aconn, b, at(0), "new", None, **chained())
+    assert (run.then_schedule_ids, run.chain_status) == ([c], "pending")
+    ignored = await runs.insert_chained(aconn, b, at(0), "ignored", "previous_running", **chained())
+    assert (ignored.status, ignored.reason, ignored.chain_status) == (
+        "ignored",
+        "previous_running",
+        None,
+    )
+    assert ignored.finished_at is not None
+
+
+async def test_set_chain_status_is_guarded(aconn):
+    src, _ = await chain_of(aconn)
+    run = await runs.insert_manual(aconn, src, at(0), "new")
+    assert await runs.set_chain_status(aconn, run.id, "fired") is True
+    assert await runs.set_chain_status(aconn, run.id, "skipped") is False
+    assert (await runs.get(aconn, run.id)).chain_status == "fired"
+
+
+async def test_list_chain_pending_oldest_first(aconn):
+    src, _ = await chain_of(aconn)
+    first = await runs.insert_manual(aconn, src, at(0), "new")
+    second = await runs.insert_manual(aconn, src, at(1), "new")
+    done = await runs.insert_manual(aconn, src, at(2), "new")
+    await runs.set_chain_status(aconn, done.id, "fired")
+    plain = await add_schedule(aconn, "plain")
+    await runs.insert_manual(aconn, plain, at(3), "new")
+    assert [r.id for r in await runs.list_chain_pending(aconn)] == [first.id, second.id]

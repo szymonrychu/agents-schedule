@@ -25,7 +25,7 @@ The `sched` entry point (`uv run sched <command>`):
 
 - `sched migrate` - apply the schema migrations to the service's own database and exit.
 - `sched api` - serve the HTTP api (schedule management, run history, probes).
-- `sched worker` - run the scheduler, dispatcher and tracker loops.
+- `sched worker` - run the scheduler, dispatcher, tracker and chain watcher loops.
 
 ## Configuration
 
@@ -49,6 +49,7 @@ Every process reads one validated `SCHED_*` environment. A bad or missing variab
 | `SCHED_POLL_SECONDS` | `10` | interval for polling running sessions (1..300) |
 | `SCHED_DISPATCH_MAX_ATTEMPTS` | `5` | dispatch attempts before a run fails (1..20) |
 | `SCHED_RUN_TIMEOUT_SECONDS` | `3600` | a run still going after this is failed so a stuck turn cannot hold a slot (60..86400) |
+| `SCHED_CHAIN_MAX_WAIT_SECONDS` | `86400` | a run's pending chain expires when its session has not finished this long after the run was created (60..604800) |
 | `SCHED_ADMIN_TOKENS_FILE` | - | file of bearer tokens, one per line; setting it starts the token-gated admin listener |
 | `SCHED_ADMIN_PORT` | `8001` | admin listener port (1..65535, must differ from `SCHED_HTTP_PORT`) |
 
@@ -62,7 +63,7 @@ Every error has the shape `{"error": {"code": "<code>", "message": "<text>"}}`. 
 
 A schedule is `{id, name, cron, timezone, preset_id, prompt, enabled, then_schedule_ids, next_fires, last_run, created_at, updated_at}`. `next_fires` holds the next three fire times (UTC, ISO 8601), empty when disabled; `last_run` is the newest run or `null`. `cron` is a 5-field expression (macros such as `@daily` are refused). A write body is `{name (1..100), cron, timezone (IANA, optional, default SCHED_DEFAULT_TIMEZONE), preset_id (uuid), prompt (1..16384), enabled (default true), then_schedule_ids (list of schedule uuids, default empty, at most 10, no duplicates)}`; unknown fields are refused. Writes check the preset against the orchestrator.
 
-`then_schedule_ids` chains schedules: the listed schedules run after this one (fan-out, kept in order). A PUT is a full replace, so omitting the field clears the links. A target must exist and must not be the schedule itself (`422 chain_self`, `422 chain_target_unknown`), and the links must not form a cycle (`409 chain_cycle`); link writes are serialised by a database lock. Deleting a schedule drops the links to and from it. Each run snapshots the links when it is inserted (`then_schedule_ids`) and carries `chain_status` (`pending` for a new run with links, else `null`; later `fired`, `skipped` or `expired`), `chained_from`, `chain_source`, `chain_ref`, `chain_depth`, `previous_name` and `previous_status`. A run with `trigger` `chained` is one started by a source run; nothing creates them yet.
+`then_schedule_ids` chains schedules: the listed schedules run after this one (fan-out, kept in order). A PUT is a full replace, so omitting the field clears the links. A target must exist and must not be the schedule itself (`422 chain_self`, `422 chain_target_unknown`), and the links must not form a cycle (`409 chain_cycle`); link writes are serialised by a database lock. Deleting a schedule drops the links to and from it. Each run snapshots the links when it is inserted (`then_schedule_ids`) and carries `chain_status` (`pending` for a new run with links, else `null`; later `fired`, `skipped` or `expired`), `chained_from`, `chain_source`, `chain_ref`, `chain_depth`, `previous_name` and `previous_status`. A run with `trigger` `chained` is one started by a source run (see Chains below).
 
 ### `GET /schedules/api/v1/schedules`
 
@@ -106,7 +107,7 @@ One run. Response `200`: the run. Errors: `403`, `404 not_found`.
 
 ### Runs
 
-A run is `{id, schedule_id, trigger, fire_time, status, reason, session_id, session_slug, message_id, reuse, created_at, updated_at, started_at, finished_at}`. `trigger` is `scheduled` or `manual`; `fire_time` is the cron time (scheduled) or the request time (manual).
+A run is `{id, schedule_id, trigger, fire_time, status, reason, session_id, session_slug, message_id, reuse, created_at, updated_at, started_at, finished_at}`. `trigger` is `scheduled`, `manual` or `chained`; `fire_time` is the cron time (scheduled), the request time (manual) or the time the chain fired (chained).
 
 Statuses: `new` (waiting for a slot under `SCHED_MAX_IN_PROGRESS` and `SCHED_MAX_PER_SCHEDULE`, or held for the Claude usage quota, see below), `in-progress` (session created or prompt delivered, turn running), `handled` (the turn completed), `failed` (see reason) and `ignored` (never sent). `reason` is null unless the run is `failed`, `ignored` or held (`new` with reason `usage_quota`):
 
@@ -130,7 +131,9 @@ Usage quota hold: when the orchestrator answers the session create with 409 `usa
 
 Reuse: when the preset sets `reuse_running_agent` and the schedule's previous run has a session that is still running, the run posts its prompt to that session instead of creating one, and `reuse` is `delivered`. When the preset opts in but that session is gone, not running or refuses the prompt, `reuse` is `fallback` and the run creates a new session as usual. `reuse` is null when the preset does not opt in or no earlier run has a session.
 
-Prompts are sandboxed Jinja templates rendered when the run is sent. Variables: `{{ schedule_name }}`, `{{ fired_at }}` (ISO 8601, in the schedule's timezone), `{{ preset }}` (the preset id) and `{{ now }}` (ISO 8601, UTC). An undefined variable or a syntax error fails the run with reason `prompt_invalid`; `POST /schedules/preview` with a `prompt` returns `rendered` and `variables`, or 422 `invalid_prompt` with the line.
+Chains: the worker's chain watcher polls every `SCHED_POLL_SECONDS` the runs whose `chain_status` is `pending`. Only a `handled` run chains: a run that ends `failed` (timeout included) or `ignored` gets `chain_status` `skipped`. A handled run's chain fires when its session has finished: the session asked to close, is no longer desired `active` (being deleted) or is gone, whichever comes first; a session that closes inside its first turn chains once the run is handled. A run delivered into a reused session (`reuse` `delivered`) does not own that session, so it chains as soon as it is handled. Firing sets `chain_status` `fired` and gives every schedule of the run's `then_schedule_ids` snapshot exactly one run with `trigger` `chained` (a unique index on source and target guards against a double fire); a target already at `SCHED_MAX_PER_SCHEDULE` runs in flight gets an `ignored` `previous_running` chained run instead, a deleted target is skipped, and a chain deeper than 10 links stops. A chained run is sent like a manual one, so a disabled target still runs, and it snapshots the target's own links, so chains continue (A to B to C). A chain still pending `SCHED_CHAIN_MAX_WAIT_SECONDS` after its run was created becomes `expired`. An orchestrator error keeps it pending. The text a handled run's turn ended with is stored on the run (`result_text`, at most 8000 characters, not part of the api views) when the run is handled, so a chained run gets it even after the source session is purged.
+
+Prompts are sandboxed Jinja templates rendered when the run is sent. Variables: `{{ schedule_name }}`, `{{ fired_at }}` (ISO 8601, in the schedule's timezone), `{{ preset }}` (the preset id), `{{ now }}` (ISO 8601, UTC) and, for a chained run, `{{ previous_schedule }}` (the source schedule's name), `{{ previous_status }}` (`handled`), `{{ previous_session_slug }}` (the source run's session slug) and `{{ previous_result }}` (the source turn's final text, at most 8000 characters); the `previous_*` variables are empty strings for any other run. An undefined variable or a syntax error fails the run with reason `prompt_invalid`; `POST /schedules/preview` with a `prompt` returns `rendered` and `variables`, or 422 `invalid_prompt` with the line.
 
 ### Versioning
 

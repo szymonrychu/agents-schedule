@@ -551,3 +551,23 @@ async def test_chain_target_delete_drops_link(http, preset):
     assert r.status_code == 200
     assert (await http.delete(f"{BASE}/schedules/{b['id']}")).status_code == 204
     assert (await http.get(f"{BASE}/schedules/{a['id']}")).json()["then_schedule_ids"] == []
+
+
+async def test_schedule_overrides_round_trip(http, preset):
+    overrides = {"replicas": 1, "start_prompt": ""}
+    r = await http.post(f"{BASE}/schedules", json=body(preset, session_overrides=overrides))
+    assert r.status_code == 201, r.text
+    assert r.json()["session_overrides"] == overrides
+    sid = r.json()["id"]
+    assert (await http.get(f"{BASE}/schedules/{sid}")).json()["session_overrides"] == overrides
+
+    r = await http.put(f"{BASE}/schedules/{sid}", json=body(preset))
+    assert r.json()["session_overrides"] is None
+
+
+@pytest.mark.parametrize(
+    "bad", [{"replicas": 0}, {"unknown": 1}, {"start_prompt": "x" * 16385}], ids=str
+)
+async def test_overrides_validation(http, preset, bad):
+    r = await http.post(f"{BASE}/schedules", json=body(preset, session_overrides=bad))
+    assert r.status_code == 422

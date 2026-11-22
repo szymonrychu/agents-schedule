@@ -15,9 +15,11 @@ from typing import Any, LiteralString, cast
 import psycopg
 from psycopg import errors
 from psycopg.rows import class_row
+from psycopg.types.json import Jsonb
 
 _COLUMNS = (
     "id, name, cron, timezone, preset_id, prompt, enabled, armed_at, created_at, updated_at, "
+    "session_overrides, "
     "COALESCE((SELECT array_agg(c.next_schedule_id ORDER BY c.position) FROM schedule_chains c "
     "WHERE c.schedule_id = schedules.id), '{}') AS then_schedule_ids"
 )
@@ -50,6 +52,7 @@ class Schedule:
     armed_at: datetime
     created_at: datetime
     updated_at: datetime
+    session_overrides: dict[str, Any] | None
     then_schedule_ids: list[uuid.UUID]
 
     def __hash__(self) -> int:  # the list field makes the generated hash fail
@@ -74,12 +77,23 @@ async def create(
     preset_id: uuid.UUID,
     prompt: str,
     enabled: bool,
+    session_overrides: dict[str, Any] | None = None,
 ) -> Schedule:
     rows = await _fetch(
         conn,
-        "INSERT INTO schedules (id, name, cron, timezone, preset_id, prompt, enabled, armed_at) "
-        f"VALUES (%s, %s, %s, %s, %s, %s, %s, now()) RETURNING {_COLUMNS}",
-        (uuid.uuid4(), name, cron, timezone, preset_id, prompt, enabled),
+        "INSERT INTO schedules "
+        "(id, name, cron, timezone, preset_id, prompt, enabled, session_overrides, armed_at) "
+        f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now()) RETURNING {_COLUMNS}",
+        (
+            uuid.uuid4(),
+            name,
+            cron,
+            timezone,
+            preset_id,
+            prompt,
+            enabled,
+            None if session_overrides is None else Jsonb(session_overrides),
+        ),
     )
     return rows[0]
 
@@ -102,9 +116,10 @@ async def update(
     schedule_id: uuid.UUID,
     *,
     expected_updated_at: datetime | None = None,
+    session_overrides: dict[str, Any] | None = None,
     **fields: Any,
 ) -> Schedule:
-    """Full replace of name, cron, timezone, preset_id, prompt and enabled.
+    """Full replace of name, cron, timezone, preset_id, prompt, enabled and session_overrides.
 
     With `expected_updated_at` the row is locked (`FOR UPDATE`) and compared first, in the same
     transaction as the write, so of two writers holding the same value only one succeeds.
@@ -127,6 +142,7 @@ async def update(
             UPDATE schedules SET
                 name = %(name)s, cron = %(cron)s, timezone = %(timezone)s,
                 preset_id = %(preset_id)s, prompt = %(prompt)s, enabled = %(enabled)s,
+                session_overrides = %(session_overrides)s,
                 armed_at = CASE
                     WHEN (%(enabled)s AND NOT enabled)
                       OR %(cron)s <> cron OR %(timezone)s <> timezone THEN now()
@@ -135,7 +151,13 @@ async def update(
             WHERE id = %(id)s
             RETURNING """
             + _COLUMNS,
-            {**fields, "id": schedule_id},
+            {
+                **fields,
+                "session_overrides": None
+                if session_overrides is None
+                else Jsonb(session_overrides),
+                "id": schedule_id,
+            },
         )
         if not rows:
             raise ScheduleNotFound(str(schedule_id))

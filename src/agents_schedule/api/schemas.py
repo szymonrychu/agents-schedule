@@ -8,6 +8,15 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+class SessionOverrides(BaseModel):
+    """Per-schedule overrides of the preset's session, passed to the orchestrator create call."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    replicas: int | None = Field(default=None, ge=1)
+    start_prompt: str | None = Field(default=None, max_length=16384)
+
+
 class ScheduleIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -17,6 +26,7 @@ class ScheduleIn(BaseModel):
     preset_id: uuid.UUID
     prompt: str = Field(min_length=1, max_length=16384)
     enabled: bool = True
+    session_overrides: SessionOverrides | None = None
     then_schedule_ids: list[uuid.UUID] = Field(default_factory=list, max_length=10)
 
     @field_validator("then_schedule_ids")
@@ -76,6 +86,7 @@ class ScheduleView(BaseModel):
     preset_id: uuid.UUID
     prompt: str
     enabled: bool
+    session_overrides: SessionOverrides | None
     then_schedule_ids: list[uuid.UUID]
     next_fires: list[datetime]
     last_run: RunView | None

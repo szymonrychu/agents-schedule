@@ -9,6 +9,8 @@ in-progress run without a message is resumed by `resume_pending`. Sending is age
   in one guarded update and posts there with `runs.deliver`. `deliver` returning None (session
   gone or being deleted), or a previous session that is not running, records `reuse = fallback`
   (and clears the session) and the run is created as below;
+- a schedule with `session_overrides` never reuses: it skips the reuse decision (a replicas or
+  start prompt override only applies to a new session) and always creates;
 - create: `runs.dispatch` creates the session from the preset with the run's slug (409 resolves
   the existing session by slug), records it, adopts a message carrying the marker or posts one,
   and records the message.
@@ -252,7 +254,9 @@ async def _send(
         run = dataclasses.replace(run, session_slug=slug)
     assert run.session_slug is not None and run.started_at is not None
 
-    binding = common_runs.PresetBinding(str(schedule.preset_id), schedule.prompt)
+    binding = common_runs.PresetBinding(
+        str(schedule.preset_id), schedule.prompt, overrides=schedule.session_overrides
+    )
     assert binding.prompt_template is not None
     fired_at = run.fire_time.astimezone(ZoneInfo(schedule.timezone))
     previous = None
@@ -285,7 +289,7 @@ async def _send(
     )
     try:
         reuse = run.reuse
-        if undecided:
+        if undecided and binding.overrides is None:
             reuse, target = await _decide_reuse(pool, client, run, binding)
             if reuse is not None:
                 await store.set_reuse(run.id, reuse, target)
@@ -299,7 +303,9 @@ async def _send(
             log.info("run %s: session %s refused the prompt, falling back", run.id, ref.session_id)
             await store.set_reuse(run.id, "fallback", None)
             ref = dataclasses.replace(ref, session_id=None)
-        sent = await common_runs.dispatch(client, store, ref, text, marker)
+        sent = await common_runs.dispatch(
+            client, store, ref, text, marker, overrides=binding.overrides
+        )
         log.info("run %s: dispatched to session %s", run.id, sent.session_id)
     except _PresetGone:
         await store.finish(ref.id, "failed", "preset_not_found")

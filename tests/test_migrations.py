@@ -34,6 +34,7 @@ def test_migrate_idempotent(empty_db_url, settings_for):
         "0002_prompt_jinja.sql",
         "0003_run_not_before.sql",
         "0004_chain.sql",
+        "0005_session_overrides.sql",
     ]
     assert migrate(settings) == []
     with psycopg.connect(empty_db_url) as conn:
@@ -55,6 +56,7 @@ def test_concurrent_migrate_applies_once(empty_db_url, settings_for):
         "0002_prompt_jinja.sql",
         "0003_run_not_before.sql",
         "0004_chain.sql",
+        "0005_session_overrides.sql",
     ]
 
 

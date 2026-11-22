@@ -94,6 +94,7 @@ def _view(sched: schedules.Schedule, last: runs.Run | None, now: datetime) -> Sc
         preset_id=sched.preset_id,
         prompt=sched.prompt,
         enabled=sched.enabled,
+        session_overrides=sched.session_overrides,
         then_schedule_ids=sched.then_schedule_ids,
         next_fires=fires,
         last_run=RunView(**vars(last).copy()) if last else None,
@@ -158,6 +159,9 @@ async def _write(
         "preset_id": data.preset_id,
         "prompt": data.prompt,
         "enabled": data.enabled,
+        "session_overrides": data.session_overrides
+        and data.session_overrides.model_dump(exclude_none=True)
+        or None,
     }
     try:
         async with request.app.state.pool.connection() as conn, conn.transaction():

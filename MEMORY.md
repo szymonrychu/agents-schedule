@@ -137,3 +137,8 @@ Tagged merged main commit 6cfa955 as annotated tag v0.1.0 (design D14, approval 
 
 - `POST /schedules/{id}/chain` lives in `api/chain.py` and is included only by `create_admin_app`, so the ui app answers 404/405 and the orchestrator relay never lists it. It is absent from the README `### ` API headings on purpose: `test_every_route_documented` walks the ui app, and the route is documented in the admin listener paragraph instead.
 - Idempotency: `fire_chain` returns nothing when `runs_chain_once` already holds, so the route then reads the existing run (`runs.get_chained`) and answers 200 instead of 202. This also covers an `ignored` `previous_running` run, which uses up the source's slot. The webhook source has no source run, so `chained_from` is NULL and depth starts at 0 (the chained run is depth 1).
+
+## 2026-11-22 - session_overrides on schedules (S-83 step 3)
+
+- `schedules.session_overrides jsonb NULL` (migration 0005) holds `{replicas?, start_prompt?}`; the api stores only the keys that were set (`start_prompt: ""` is kept, an empty object becomes NULL). A PUT is a full replace, so omitting it clears it. `_send` passes it as `PresetBinding.overrides` and `common_runs.dispatch(..., overrides=...)`.
+- A schedule with overrides skips `_decide_reuse` and always creates a session: overrides only apply at creation, and the dream schedules need a fresh pod. agents-common's 409 adopt-by-slug path is not a gap here: the run slug embeds the run id, so it only re-finds that run's own session after a restart, never another run's running session. Pin is agents-common v0.21.0.

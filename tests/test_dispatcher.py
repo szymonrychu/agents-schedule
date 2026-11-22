@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 import uuid
 from collections.abc import AsyncIterator
@@ -70,6 +71,7 @@ async def add_schedule(
     prompt: str = "Run {{ schedule_name }} at {{ fired_at }} on {{ preset }}; keep {braces}",
     timezone: str = "Europe/Warsaw",
     enabled: bool = True,
+    session_overrides: dict | None = None,
 ) -> schedules.Schedule:
     return await schedules.create(
         conn,
@@ -79,6 +81,7 @@ async def add_schedule(
         preset_id=preset_id,
         prompt=prompt,
         enabled=enabled,
+        session_overrides=session_overrides,
     )
 
 
@@ -717,3 +720,43 @@ async def test_hold_is_status_guarded(aconn, pool):
     assert not await dispatcher.RunsStore(pool).hold(run.id, FIRE + LATER)
     got = await runs.get(aconn, run.id)
     assert (got.status, got.reason, got.not_before) == ("new", None, None)
+
+
+OVERRIDES = {"replicas": 1, "start_prompt": ""}
+
+
+async def test_run_with_overrides_creates_fresh_session(aconn, pool, client, fake, settings):
+    preset = fake.add_preset("reuse", spec={"reuse_running_agent": True})
+    sched = await add_schedule(aconn, preset.id, session_overrides=OVERRIDES)
+    prev = await dispatch_previous(aconn, pool, client, settings, sched)
+    run = await runs.insert_manual(aconn, sched.id, datetime.now(UTC), "new")
+
+    assert await dispatcher.dispatch_once(pool, client, settings)
+
+    got = await runs.get(aconn, run.id)
+    assert got.reuse is None
+    assert got.session_id is not None and got.session_id != prev.session_id
+    assert len(fake.sessions) == 2
+    session = fake.sessions[str(got.session_id)]
+    assert (session["replicas"], session["start_prompt"]) == (1, "")
+    assert fake.messages[int(got.message_id)]["session_id"] == str(got.session_id)
+
+
+async def test_run_without_overrides_unchanged(aconn, pool, client, fake, settings):
+    preset = fake.add_preset("reuse", spec={"reuse_running_agent": True})
+    sched = await add_schedule(aconn, preset.id)
+    prev = await dispatch_previous(aconn, pool, client, settings, sched)
+    run = await runs.insert_manual(aconn, sched.id, datetime.now(UTC), "new")
+
+    assert await dispatcher.dispatch_once(pool, client, settings)
+
+    got = await runs.get(aconn, run.id)
+    assert got.reuse == "delivered"
+    assert got.session_id == prev.session_id
+    create_bodies = [
+        json.loads(await r.body())
+        for r in fake.requests
+        if r.method == "POST" and r.url.path == "/api/v1/sessions"
+    ]
+    assert create_bodies
+    assert all("overrides" not in b for b in create_bodies)

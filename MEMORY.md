@@ -142,3 +142,8 @@ Tagged merged main commit 6cfa955 as annotated tag v0.1.0 (design D14, approval 
 
 - `schedules.session_overrides jsonb NULL` (migration 0005) holds `{replicas?, start_prompt?}`; the api stores only the keys that were set (`start_prompt: ""` is kept, an empty object becomes NULL). A PUT is a full replace, so omitting it clears it. `_send` passes it as `PresetBinding.overrides` and `common_runs.dispatch(..., overrides=...)`.
 - A schedule with overrides skips `_decide_reuse` and always creates a session: overrides only apply at creation, and the dream schedules need a fresh pod. agents-common's 409 adopt-by-slug path is not a gap here: the run slug embeds the run id, so it only re-finds that run's own session after a restart, never another run's running session. Pin is agents-common v0.21.0.
+
+## 2026-11-23 - final review of session_overrides (S-83)
+
+- PUT stays a full replace: omitting `session_overrides` clears them, like every other field; `test_schedule_overrides_round_trip` pins it. Not changed.
+- Create and PUT refuse `session_overrides.replicas` above the preset's ceiling (`spec.max_replicas`, else `spec.replicas`) with 422 `replicas_over_max`. A preset spec naming neither is not checked (the orchestrator defaults apply and judge at fire time). The preset is read once at write time; a later preset edit can still fail at fire time.

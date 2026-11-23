@@ -571,3 +571,22 @@ async def test_schedule_overrides_round_trip(http, preset):
 async def test_overrides_validation(http, preset, bad):
     r = await http.post(f"{BASE}/schedules", json=body(preset, session_overrides=bad))
     assert r.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("spec", "replicas", "status"),
+    [
+        ({"replicas": 2, "max_replicas": 3}, 4, 422),
+        ({"replicas": 2, "max_replicas": 3}, 3, 201),
+        ({"replicas": 2}, 3, 422),
+        ({"replicas": 2}, 2, 201),
+        ({}, 5, 201),
+    ],
+    ids=str,
+)
+async def test_overrides_replicas_within_preset_max(http, fake, spec, replicas, status):
+    p = fake.add_preset("capped", spec=spec)
+    r = await http.post(f"{BASE}/schedules", json=body(p, session_overrides={"replicas": replicas}))
+    assert r.status_code == status, r.text
+    if status == 422:
+        assert r.json()["error"]["code"] == "replicas_over_max"

@@ -17,6 +17,7 @@ from agents_common.orchestrator import (
     OrchestratorClient,
     OrchestratorError,
     OrchestratorUnavailable,
+    Preset,
 )
 from fastapi import APIRouter, Header, Request, Response
 
@@ -28,6 +29,7 @@ from agents_schedule.api.schemas import (
     RunView,
     ScheduleIn,
     ScheduleView,
+    SessionOverrides,
 )
 from agents_schedule.db import runs, schedules
 from agents_schedule.prompt import prompt_context
@@ -56,9 +58,23 @@ def _validate_cron(
     return normalised, name, tz
 
 
-async def _check_preset(client: OrchestratorClient, preset_id: uuid.UUID) -> None:
+def _check_replicas(preset: Preset, overrides: SessionOverrides | None) -> None:
+    """Refuse a replicas override above the preset's ceiling (`max_replicas`, else `replicas`);
+    a preset spec naming neither leaves the orchestrator's defaults to judge at fire time."""
+    if overrides is None or overrides.replicas is None:
+        return
+    ceiling = preset.spec.get("max_replicas") or preset.spec.get("replicas")
+    if ceiling is not None and overrides.replicas > ceiling:
+        raise ApiError(
+            422,
+            "replicas_over_max",
+            f"session_overrides.replicas {overrides.replicas} exceeds the preset maximum {ceiling}",
+        )
+
+
+async def _check_preset(client: OrchestratorClient, preset_id: uuid.UUID) -> Preset:
     try:
-        await client.get_preset(preset_id)
+        return await client.get_preset(preset_id)
     except NotFound as exc:
         raise ApiError(422, "unknown_preset", f"preset {preset_id} does not exist") from exc
     except OrchestratorUnavailable as exc:
@@ -151,7 +167,8 @@ async def _write(
         templating.validate(data.prompt)
     except templating.TemplateError as exc:
         raise ApiError(422, "invalid_prompt", _prompt_error(vars(exc))) from exc
-    await _check_preset(request.app.state.client, data.preset_id)
+    preset = await _check_preset(request.app.state.client, data.preset_id)
+    _check_replicas(preset, data.session_overrides)
     fields = {
         "name": data.name,
         "cron": expr,

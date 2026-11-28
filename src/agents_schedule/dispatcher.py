@@ -235,7 +235,7 @@ async def _send_isolated(
     return True
 
 
-async def _send(
+async def _send(  # noqa: C901, PLR0912, PLR0915
     pool: AsyncConnectionPool, client: OrchestratorClient, settings: Settings, run: runs.Run
 ) -> None:
     store = RunsStore(pool)

@@ -16,7 +16,7 @@ Run from this directory with mise:
 - `mise run lint` - ruff check and format check
 - `mise run fmt` - ruff format
 - `mise run test:e2e` - kind end-to-end test (`scripts/e2e.sh`)
-- `mise run test:chart` - chart render tests
+- `mise run test:critical` - the critical fast lane
 - `mise run lint:chart` - `helm lint` of the chart
 
 ## Commands

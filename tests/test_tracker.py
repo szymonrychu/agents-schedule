@@ -14,6 +14,8 @@ from agents_schedule import dispatcher, tracker
 from agents_schedule.db import runs, schedules
 from agents_schedule.settings import Settings
 
+pytestmark = pytest.mark.critical
+
 FIRE = datetime(2026, 3, 1, 2, 0, tzinfo=UTC)
 
 
@@ -187,7 +189,7 @@ async def test_reused_run_tracked_by_delivery(aconn, pool, client, fake, setting
     assert await tracker.track_once(pool, client, settings, now) == 0
     assert (await state(aconn, run)).status == "in-progress"
 
-    # sent: handled
+    # the message is now sent: the run is handled
     fake.mark_sent(mid(run))
     assert await tracker.track_once(pool, client, settings, now) == 1
     got = await state(aconn, run)

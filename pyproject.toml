@@ -41,9 +41,13 @@ packages = ["src/agents_schedule"]
 pythonpath = ["src", "tests"]
 asyncio_mode = "auto"
 markers = [
+    "unit: fast tests with no external service",
+    "integration: needs a real service such as Postgres",
     "e2e: needs kind",
+    "live: needs live external systems",
+    "critical: guards user-visible flows, data integrity or security (fast lane)",
 ]
-addopts = "-q -m 'not e2e'"
+addopts = "-q --strict-markers -m 'not e2e'"
 
 [tool.ruff]
 line-length = 100
@@ -51,3 +55,7 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+extend-select = ["C90", "PLR0911", "PLR0912", "PLR0915", "RET", "ERA"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10

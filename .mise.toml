@@ -20,9 +20,9 @@ run = "uv run ruff format ."
 description = "Run the kind end-to-end test"
 run = "bash scripts/e2e.sh"
 
-[tasks."test:chart"]
-description = "Run the chart render tests"
-run = "uv run pytest tests/test_chart.py tests/test_chart_ingress.py"
+[tasks."test:critical"]
+description = "Run the critical fast lane"
+run = "uv run pytest -m 'critical and not e2e'"
 
 [tasks."lint:chart"]
 description = "Lint the helm chart"

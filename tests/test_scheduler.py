@@ -13,6 +13,8 @@ from agents_schedule.db import runs, schedules
 from agents_schedule.scheduler import TickResult
 from agents_schedule.settings import Settings
 
+pytestmark = pytest.mark.critical
+
 T0 = datetime(2026, 3, 1, 0, 0, tzinfo=UTC)
 HOUR = timedelta(hours=1)
 HOURLY = "0 * * * *"

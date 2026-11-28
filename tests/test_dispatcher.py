@@ -19,6 +19,8 @@ from agents_schedule.db import runs, schedules
 from agents_schedule.prompt import render_prompt, session_slug
 from agents_schedule.settings import Settings
 
+pytestmark = pytest.mark.critical
+
 FIRE = datetime(2026, 3, 1, 2, 0, tzinfo=UTC)
 LATER = timedelta(hours=1)
 LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")

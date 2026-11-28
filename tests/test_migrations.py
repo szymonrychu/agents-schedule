@@ -6,6 +6,8 @@ import pytest
 
 from agents_schedule.db.migrate import migrate
 
+pytestmark = pytest.mark.critical
+
 
 def add_schedule(conn, name="nightly") -> uuid.UUID:
     sid = uuid.uuid4()

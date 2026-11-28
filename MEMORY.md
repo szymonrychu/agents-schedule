@@ -147,3 +147,10 @@ Tagged merged main commit 6cfa955 as annotated tag v0.1.0 (design D14, approval 
 
 - PUT stays a full replace: omitting `session_overrides` clears them, like every other field; `test_schedule_overrides_round_trip` pins it. Not changed.
 - Create and PUT refuse `session_overrides.replicas` above the preset's ceiling (`spec.max_replicas`, else `spec.replicas`) with 422 `replicas_over_max`. A preset spec naming neither is not checked (the orchestrator defaults apply and judge at fire time). The preset is read once at write time; a later preset edit can still fail at fire time.
+
+## 2026-11-28 - S-99 tests, markers, complexity lint, next-version CLI
+
+- Deleted B3 tests (53 tests): test_settings, test_chart, test_chart_ingress, test_next_version, and the config/structure parts of test_ci_workflow and test_readme_api. Kept the chart-version.sh script test (now tests/test_chart_version_script.py) and the openapi snapshot test (tests/test_openapi.py).
+- Markers unit, integration, e2e, live, critical registered with `--strict-markers`. Critical: dispatcher, scheduler, tracker, migrations (cron firing, run tracking, orchestrator dispatch, schema). `mise run test:critical` and CI job `test-critical` run them.
+- Ruff adds C90, PLR0911/0912/0915, RET, ERA (max-complexity 10); baseline is one noqa on `dispatcher._send`.
+- The release job calls the `next-version` console script of agents-common v0.23.0 through pipx; scripts/next_version.py is gone. The chart render task test:chart is gone, lint:chart stays.
